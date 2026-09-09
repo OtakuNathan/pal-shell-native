@@ -19,7 +19,7 @@ Issues = "https://github.com/OtakuNathan/pal-shell-native/issues"
 [tool.scikit-build]
 wheel.packages = []
 install.components = ["native"]
-sdist.include = ["*.cpp", "*.h", "*.def", "CMakeLists.txt", "dependencies/**", "tests/**", "README.md", "LICENSE", "THIRD_PARTY.md"]
+sdist.exclude = [".venv/**", "build/**", "dist/**", "**/__pycache__/**"]
 
 [tool.cibuildwheel]
 build = "cp311-* cp312-* cp313-*"
