@@ -1,0 +1,32 @@
+[build-system]
+requires = ["scikit-build-core>=0.11,<2"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pal-shell-native"
+version = "0.1.0"
+description = "Optional in-process native shell execution backend for Pal"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Nathan Wu"}]
+classifiers = ["Programming Language :: Python :: Implementation :: CPython", "Programming Language :: C++", "Operating System :: POSIX"]
+
+[project.urls]
+Repository = "https://github.com/OtakuNathan/pal-shell-native"
+Issues = "https://github.com/OtakuNathan/pal-shell-native/issues"
+
+[tool.scikit-build]
+wheel.packages = []
+install.components = ["native"]
+sdist.include = ["*.cpp", "*.h", "*.def", "CMakeLists.txt", "dependencies/**", "tests/**", "README.md", "LICENSE", "THIRD_PARTY.md"]
+
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-*"
+skip = "*-musllinux_* *-win*"
+build-verbosity = 1
+test-command = "python {project}/tests/test_backend.py"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"

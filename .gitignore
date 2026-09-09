@@ -1,0 +1,6 @@
+/build/
+/dist/
+/wheelhouse/
+/.venv/
+__pycache__/
+*.so
