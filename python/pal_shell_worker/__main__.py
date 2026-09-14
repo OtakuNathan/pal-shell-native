@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--generate-client-key', type=Path, help='Create a private client signing key and print only its public key')
     parser.add_argument('--write-service', type=Path, help='Write a user-service definition to this directory; never activate it')
     parser.add_argument('--executable', type=Path, help='Installed pal-shell-worker executable for the service definition')
+    parser.add_argument('--setup-sudo', action='store_true', help='Interactively enroll remote sudo credentials and prepare protected helper configuration')
     args, extra = parser.parse_known_args()
     if args.askpass_config:
         import sys
@@ -48,6 +49,11 @@ def main():
         raise SystemExit(askpass_main())
     if extra:
         parser.error('Unexpected arguments')
+    if args.setup_sudo:
+        if args.config is None or args.generate_client_key or args.write_service:
+            parser.error('--setup-sudo requires --config and cannot be combined with key/service generation')
+        from .sudo_setup import main as setup_sudo
+        raise SystemExit(setup_sudo(load_config(args.config)))
     if args.generate_client_key:
         import os
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

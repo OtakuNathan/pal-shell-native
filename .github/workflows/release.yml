@@ -70,6 +70,7 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '2'
       - run: python tests/test_remote.py
+      - run: python tests/test_sudo_setup.py
       - run: python packaging/build_worker.py
       - run: dist/pal-shell-worker/pal-shell-worker --help
       - run: python tests/test_worker_bundle.py dist/pal-shell-worker/pal-shell-worker

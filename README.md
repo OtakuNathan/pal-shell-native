@@ -200,6 +200,23 @@ See the matching Pal tree's `docs/remote-shell.md` for complete configuration,
 permission, output delivery and lifecycle contracts. The new remote tests run as
 `python tests/test_remote.py` against the installed package. Existing `Runtime.run`
 callers retain their behavior; `run_limited` is an additional bounded-output entry.
+## Remote sudo setup
+
+Remote users can prepare sudo credentials from their own terminal with
+`pal-shell-worker --config /absolute/worker.toml --setup-sudo`.
+Run as the ordinary worker account. The wizard delegates hidden password entry to
+macOS `security` or Linux `secret-tool`, verifies read access with output discarded,
+and writes password-free helper/configuration templates plus `NEXT_STEPS.txt`.
+Linux requires an unlocked user Secret Service session. Windows is unsupported.
+An administrator still installs the protected worker/helper files; the wizard
+does not elevate, alter the existing worker configuration, or restart services.
+Stored credentials do not prove the sudo policy or approval path: verify a harmless
+approved `id` command after installation. Re-run to explicitly replace a password.
+
+The prompt-only macOS invocation follows Apple's
+[security tool interface](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/security.c);
+Linux uses secret-tool's [TTY password entry](https://github.com/GNOME/libsecret/blob/main/tool/secret-tool.c).
+
 ## Companion Pal plugin
 
 `pal_plugin/` owns the client-side remote Hub, target Slots and plugin manifest.
