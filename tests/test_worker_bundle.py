@@ -36,13 +36,21 @@ async def main(binary):
                 return await client.connect()
             client = await connect()
             oid = uuid4().hex
-            args = {'operation_id': oid, 'cmd': 'sleep .1; printf bundle-ok', 'wait_ms': 1000}
+            gate = root/'finish'
+            args = {'operation_id': oid,
+                    'cmd': f'while [ ! -f {gate} ]; do sleep .01; done; printf bundle-ok', 'wait_ms': 0}
             await client.request('submit', args)
             epoch = client.epoch
             await client.close()
             client = await connect(epoch)
             await client.request('submit', args)
             result = (await client.request('query', {'operation_id': oid, 'wait_ms': 5000}))['result']
+            assert result['status'] == 'running', result
+            gate.touch()
+            read = uuid4().hex
+            await client.request('session', {'operation_id': read, 'session_id': result['session_id'],
+                                            'action': 'read', 'wait_ms': 5000})
+            result = (await client.request('query', {'operation_id': read, 'wait_ms': 5000}))['result']
             assert result['status'] == 'exited', result
             output = await client.request('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
             assert output['data'] == b'bundle-ok', output

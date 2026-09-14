@@ -12,6 +12,9 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(Threads REQUIRED)
 find_package(Git REQUIRED)
+# FetchContent's generated subproject parses PATCH_COMMAND as CMake source.
+# Native Windows backslashes (for example \hostedtoolcache) are not CMake escapes.
+string(REPLACE "\\" "/" PATCH_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
 option(BUILD_TESTING "Build the embedded-Python GIL lifetime regression" OFF)
 include(FetchContent)
 # Archive checksums lock the dependency contents as well as their revisions.
@@ -24,7 +27,7 @@ FetchContent_Declare(bridge
   URL https://codeload.github.com/OtakuNathan/dynabridge/tar.gz/0762d81175a6f3172b4a142b026d8392150fca6f
   URL_HASH SHA256=955f132e17bc648000e086f069dbc983ef9172695145b35e667cb52aca7ef9c9
   SOURCE_SUBDIR _headers_only
-  PATCH_COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/apply_patch.py"
+  PATCH_COMMAND "${PATCH_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/apply_patch.py"
     "${GIT_EXECUTABLE}" <SOURCE_DIR> "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/bridge-gil-lifetime.patch")
 set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LIBUV_BUILD_BENCH OFF CACHE BOOL "" FORCE)

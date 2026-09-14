@@ -44,12 +44,23 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disconnect_and_deduplicate(self):
         file = self.path/'count'
-        args = {'operation_id': uuid4().hex, 'cmd': f'echo x >> {file}; sleep 0.1; printf done', 'wait_ms': 1000}
+        gate = self.path/'finish'
+        args = {'operation_id': uuid4().hex,
+                'cmd': f'echo x >> {file}; while [ ! -f {gate} ]; do sleep .01; done; printf done',
+                'wait_ms': 0}
         await self.client.request('submit', args)
         await self.client.close()
         other = await self.connect(epoch=self.worker.epoch)
         await other.request('submit', args)
         result = await self.query(args['operation_id'], other)
+        # query recovers the original operation snapshot; it does not wait for
+        # the process to exit. Keep the process alive until after reconnection.
+        self.assertEqual(result['result']['status'], 'running')
+        gate.touch()
+        read = uuid4().hex
+        await other.request('session', {'operation_id': read, 'session_id': result['result']['session_id'],
+                                        'action': 'read', 'wait_ms': 5000})
+        result = await self.query(read, other)
         self.assertEqual(result['result']['status'], 'exited')
         self.assertEqual(file.read_text(), 'x\n')
         chunk = await other.request('output', {'snapshot': result['result']['snapshot'], 'stream': 'stdout'})
