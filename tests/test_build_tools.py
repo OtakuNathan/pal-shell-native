@@ -1,5 +1,6 @@
 """Regression for Git's silent path filtering inside an enclosing repository."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,8 +22,10 @@ class PatchTests(unittest.TestCase):
                               b'--- a/header.h\r\n+++ b/header.h\r\n'
                               b'@@ -1,2 +1,2 @@\r\n\r\n-before\r\n+after\r\n')
             command = [sys.executable, str(SCRIPT), 'git', str(source), str(patch)]
+            env = {**os.environ, 'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.autocrlf',
+                   'GIT_CONFIG_VALUE_0': 'true'}
             for _ in range(2):
-                subprocess.run(command, check=True)
+                subprocess.run(command, check=True, env=env)
                 self.assertEqual(target.read_bytes(), b'\nafter\n')
 
     def test_nested_dependency_is_patched_once_and_bad_input_fails(self):
@@ -32,7 +35,7 @@ class PatchTests(unittest.TestCase):
             source = root / 'build' / 'deps' / 'example'
             source.mkdir(parents=True)
             target = source / 'header.h'
-            target.write_text('before\n')
+            target.write_bytes(b'before\n')  # Downloaded dependency archives use LF on Windows too.
             patch = root / 'fix.patch'
             patch.write_text('diff --git a/header.h b/header.h\n'
                              '--- a/header.h\n+++ b/header.h\n'
