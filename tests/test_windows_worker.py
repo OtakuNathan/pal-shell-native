@@ -11,7 +11,7 @@ if os.name != 'nt':
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pal_shell_worker.worker import Worker, WorkerConfig
-from pal_shell_worker.protocol import RemoteError
+from pal_shell_worker.protocol import RemoteError, TERMINAL
 
 
 class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -28,12 +28,28 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.close()
         self.directory.cleanup()
 
-    async def run_command(self, cmd, **kwargs):
+    async def read_session(self, sid, wait_ms=1000):
+        oid = uuid4().hex
+        await self.worker.handle('session', {'operation_id': oid, 'session_id': sid,
+                                            'action': 'read', 'wait_ms': wait_ms})
+        reply = await self.worker.handle('query', {'operation_id': oid, 'wait_ms': 5000})
+        self.assertIsNone(reply['error'], reply)
+        self.assertIsNotNone(reply['result'], reply)
+        return reply['result']
+
+    async def run_command(self, cmd, *, complete=True, **kwargs):
         oid = uuid4().hex
         await self.worker.handle('submit', {'operation_id': oid, 'cmd': cmd, 'wait_ms': 1000, **kwargs})
         reply = await self.worker.handle('query', {'operation_id': oid, 'wait_ms': 5000})
         self.assertIsNone(reply['error'], reply)
-        return reply['result']
+        result = reply['result']
+        # query recovers the submit snapshot, which may precede process exit.
+        # Read the existing session instead of assuming a one-second startup.
+        if complete:
+            async with asyncio.timeout(15):
+                while result['status'] not in TERMINAL:
+                    result = await self.read_session(result['session_id'], 5000)
+        return result
 
     async def test_unicode_exit_and_metadata(self):
         result = await self.run_command("[Console]::Write('你好'); [Console]::Error.Write('错误'); exit 7")
@@ -61,7 +77,9 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         directory.mkdir()
         result = await self.run_command('[Console]::Write((Get-Location).Path)', cwd=str(directory))
         reply = await self.worker.handle('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
-        self.assertEqual(reply['data'].decode('utf-8'), str(directory))
+        # Hosted runners expose TEMP via an 8.3 alias (RUNNER~1), while
+        # PowerShell returns the long path (runneradmin) for the same directory.
+        self.assertTrue(Path(reply['data'].decode('utf-8')).samefile(directory))
 
     async def test_bounded_output_and_timeout(self):
         result = await self.run_command("[Console]::Write('x'*100000)")
@@ -72,8 +90,14 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'], 'timed_out')
 
     async def test_termination_reaps_descendants(self):
-        result = await self.run_command("$p=Start-Process ping.exe -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru; [Console]::Write($p.Id); Start-Sleep -Seconds 60")
-        output = await self.worker.handle('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+        result = await self.run_command("$p=Start-Process ping.exe -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru; [Console]::Write($p.Id); Start-Sleep -Seconds 60", complete=False)
+        async with asyncio.timeout(15):
+            while True:
+                output = await self.worker.handle('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+                if output['data']:
+                    break
+                self.assertNotIn(result['status'], TERMINAL, result)
+                result = await self.read_session(result['session_id'])
         pid = int(output['data'])
         sid = result['session_id']
         for action in ['terminate', 'read']:
