@@ -1,0 +1,2 @@
+# Patches are parsed by git apply against LF-only source archives on every OS.
+*.patch text eol=lf

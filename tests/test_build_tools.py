@@ -9,6 +9,22 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'dependencies' / 'apply_patch.py'
 
 
 class PatchTests(unittest.TestCase):
+    def test_crlf_patch_with_empty_context_applies_and_can_be_repeated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/'source'
+            source.mkdir()
+            target = source/'header.h'
+            target.write_bytes(b'\nbefore\n')
+            patch = root/'windows.patch'
+            patch.write_bytes(b'diff --git a/header.h b/header.h\r\n'
+                              b'--- a/header.h\r\n+++ b/header.h\r\n'
+                              b'@@ -1,2 +1,2 @@\r\n\r\n-before\r\n+after\r\n')
+            command = [sys.executable, str(SCRIPT), 'git', str(source), str(patch)]
+            for _ in range(2):
+                subprocess.run(command, check=True)
+                self.assertEqual(target.read_bytes(), b'\nafter\n')
+
     def test_nested_dependency_is_patched_once_and_bad_input_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
