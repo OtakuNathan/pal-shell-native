@@ -54,9 +54,9 @@ public:
         }
         return result;
     }
-    void append(const char* data, std::size_t size) {
+    void append(const char* data, std::size_t size, bool error = false) {
         while (size) {
-            const auto count = ::write(out, data, size);
+            const auto count = ::write(error ? err : out, data, size);
             if (count < 0 && errno == EINTR) continue;
             if (count <= 0) throw std::system_error(count < 0 ? errno : EIO, std::generic_category(), "PTY output file");
             data += count;

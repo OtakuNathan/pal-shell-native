@@ -1,9 +1,17 @@
-Optional native shell backend extracted from Pal, with the existing Python backend retained as the default.
+0.2.0 adds an independent user worker and authenticated remote shell RPC.
 
-- CPython 3.11–3.13 wheels for Linux glibc 2.28+ x86_64/aarch64 and macOS arm64.
-- In-process Flux Foundry/dynabridge execution with statically linked libuv.
-- Retained sessions, PTY, cancellation, bounded inline output and complete file output.
-- README describes agent-assisted installation, compatibility checks, rollback and user-controlled restart.
-- Release publication requires installed-wheel tests, source-archive build, Pal resident/Bunshin integration and GIL lifetime checks.
+- Reuse Dynabridge RPC and FF/libuv, with a separate shell projection.
+- Keep Runtime/session/PTY ownership independent of SSH and client connections.
+- Add execution deduplication, Runtime fencing, bounded output snapshots and metadata.
+- Add signed single-use privileged-operation grants, remote-only askpass and a
+  non-setuid root monitor, with physical-target acceptance still required.
+- Generate Linux user-service / Mac LaunchAgent definitions without activation.
+- Build standalone worker archives and Mac Intel wheels alongside existing platforms.
+- Preserve existing local Runtime API and add optional hard output bounds.
+- Add an experimental Windows PowerShell process adapter using the same Runtime,
+  with Job Object cancellation and SSH-forwarded loopback RPC. No ConPTY or power
+  management; Windows publication remains outside the release matrix.
 
-Download README.md first. This is a native Python extension, not a sidecar `.palpkg`. It requires compatible Pal host integration (baseline `da16c294f143d040f3bfc064411c4244156cefeb`). It does not edit Pal or restart it during installation.
+This package does not enable remote in Pal, alter user configuration, install
+privileged helpers as root, activate a service, or restart anything. Use matching
+Pal integration and follow `docs/remote-shell.md` in that repository.

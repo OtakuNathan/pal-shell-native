@@ -1,0 +1,62 @@
+name: experimental Windows worker
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-worker:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - run: python -m pip install msgpack cryptography
+      - name: Configure native Runtime and Dynabridge RPC extensions
+        run: |
+          $workerPython = python -c 'import sys; print(sys.executable)'
+          if ($LASTEXITCODE) { throw 'Python discovery failed' }
+          cmake -S . -B build/windows -G "Visual Studio 17 2022" -A x64 "-DPython3_EXECUTABLE=$workerPython"
+      - run: cmake --build build/windows --config Release --parallel 2
+      - name: Test PowerShell sessions and process ownership
+        run: python tests/test_windows_worker.py -v
+        env:
+          PYTHONPATH: build/windows/Release;python
+      - name: Assemble isolated experimental worker bundle
+        run: |
+          $workerPythonRoot = python -c 'import sys; print(sys.base_prefix)'
+          if ($LASTEXITCODE) { throw 'Python discovery failed' }
+          ./packaging/build_windows_worker.ps1 -PythonRoot $workerPythonRoot -NativeBuild build/windows/Release -Destination dist/pal-shell-worker-windows-x86_64
+      - name: Verify and test the bundled interpreter and modules
+        run: |
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $workerBundle = (Resolve-Path dist/pal-shell-worker-windows-x86_64).Path
+          & "$workerBundle/python/python.exe" -c 'import pathlib, sys, _pal_shell_runtime, _pal_shell_rpc, pal_shell_worker, cryptography, msgpack; root = pathlib.Path(sys.executable).resolve().parent; modules = (_pal_shell_runtime, _pal_shell_rpc, pal_shell_worker, cryptography, msgpack); assert all(pathlib.Path(m.__file__).resolve().is_relative_to(root) for m in modules), [(m.__name__, m.__file__) for m in modules]'
+          if ($LASTEXITCODE) { throw 'Bundle imports escaped the bundled Python directory' }
+          & "$workerBundle/pal-shell-worker.cmd" --help
+          if ($LASTEXITCODE) { throw 'Worker launcher failed' }
+          & "$workerBundle/python/python.exe" tests/test_windows_worker.py -v
+          if ($LASTEXITCODE) { throw 'Bundled worker regression failed' }
+      - name: Archive prototype and checksum
+        run: |
+          $workerArchive = 'dist/pal-shell-worker-windows-x86_64-prototype.zip'
+          Compress-Archive -Path dist/pal-shell-worker-windows-x86_64 -DestinationPath $workerArchive
+          $workerHash = (Get-FileHash $workerArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$workerHash  $([IO.Path]::GetFileName($workerArchive))" | Set-Content "$workerArchive.sha256" -Encoding ASCII
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-windows-x64-py313
+          path: |
+            dist/*-prototype.zip
+            dist/*-prototype.zip.sha256
+          if-no-files-found: error

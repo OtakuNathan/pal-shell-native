@@ -24,6 +24,8 @@ public:
     void bind(std::function<void(const Event&)> notifier);
     void run(id_t request, std::string shell, std::string command, std::string cwd,
              bool tty, int wait_ms, int timeout_ms, int inline_limit);
+    void run_limited(id_t request, std::string shell, std::string command, std::string cwd,
+                     bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit);
     void read(id_t request, id_t session, int wait_ms);
     void write(id_t request, id_t session, std::string input);
     void resize(id_t request, id_t session, int rows, int columns);

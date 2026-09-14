@@ -1,0 +1,3 @@
+BEGIN_CALLABLE_GROUP(shell_request)
+    DECL_CALLABLE(std::string, std::string)
+END_CALLABLE_GROUP

@@ -1,5 +1,9 @@
 #include "runtime.h"
+#ifdef _WIN32
+#include "output_windows.h"
+#else
 #include "output_files.h"
+#endif
 #include "process_posix.h"
 #include "dynabridge/extensions/flux_foundry/python_interpreter_executor.h"
 #include "dynabridge/extensions/flux_foundry/uv_executor.h"
@@ -10,14 +14,24 @@
 #include <deque>
 #include <fcntl.h>
 #include <future>
+#ifdef _WIN32
+#include <filesystem>
+#endif
 #include <map>
 #include <mutex>
 #include <signal.h>
 #include <stdexcept>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#else
+#include <io.h>
+#ifndef SIGKILL
+#define SIGKILL 9
+#endif
+#endif
 
 namespace dynabridge::pal_shell {
 namespace ff = flux_foundry;
@@ -29,7 +43,14 @@ struct Runtime::Impl {
     static thread_local Impl* delivering;
     struct Session;
     struct ProcessAwaitable;
-    struct Poll { uv_poll_t handle{}; std::shared_ptr<Session> session; int fd; bool error; };
+    struct Poll {
+#ifdef _WIN32
+        uv_timer_t handle{};
+#else
+        uv_poll_t handle{};
+#endif
+        std::shared_ptr<Session> session; int fd; bool error;
+    };
     enum class TimerKind { wait, deadline, kill };
     struct Timer {
         uv_timer_t handle{};
@@ -46,6 +67,8 @@ struct Runtime::Impl {
         bool flow_done = false, finished = false;
         bool result_delivered = false;
         int wait_ms = 0, timeout_ms = 0, returncode = 0, signal = 0, inline_limit = 0;
+        id_t output_limit = 0, captured = 0;
+        bool truncated = false;
         pid_t pid = -1;
         id_t initial_request;
         std::unique_ptr<OutputFiles> files;
@@ -164,6 +187,7 @@ struct Runtime::Impl {
         event.request = request;
         event.session = initial && s->finished ? 0 : s->id;
         event.tty = s->tty;
+        event.truncated = s->truncated;
         event.status = s->finished ? (s->error.empty() ? (s->reason.empty() ? "exited" : s->reason) : "failed")
                                    : (s->reason.empty() ? "running" : "terminating");
         event.error = s->error;
@@ -184,7 +208,11 @@ struct Runtime::Impl {
     }
     static void close_poll(Poll*& poll) {
         if (!poll) return;
+#ifdef _WIN32
+        uv_timer_stop(&poll->handle);
+#else
         uv_poll_stop(&poll->handle);
+#endif
         uv_close(reinterpret_cast<uv_handle_t*>(&poll->handle), [](uv_handle_t* handle) {
             auto* p = static_cast<Poll*>(handle->data); ::close(p->fd); delete p;
         });
@@ -225,6 +253,49 @@ struct Runtime::Impl {
         }, ms, 0);
         if (code) { close_timer(value); throw std::runtime_error(uv_strerror(code)); }
     }
+#ifdef _WIN32
+    void arm(Poll* p) {
+        const int code = uv_timer_start(&p->handle, [](uv_timer_t* h) {
+            auto* p = static_cast<Poll*>(h->data);
+            auto s = p->session;
+            bool eof = false;
+            char bytes[8192];
+            for (int i = 0; i < 32; ++i) {
+                int count = read_child_pipe(p->fd, bytes, sizeof(bytes));
+                if (count == -2) break;
+                if (count <= 0) {
+                    if (count < 0) { s->error = "Windows output pipe failed"; s->controller->cancel(true); }
+                    eof = true; break;
+                }
+                try {
+                    if (s->error.empty()) {
+                        auto amount = s->output_limit ? std::min<id_t>(count, s->output_limit-s->captured) : id_t(count);
+                        s->files->append(bytes, amount, p->error);
+                        s->captured += amount;
+                        if (amount != id_t(count)) {
+                            s->truncated = true;
+                            s->error = "output_limit_exceeded: retained output is incomplete";
+                            s->controller->cancel(true);
+                        }
+                    }
+                } catch (const std::exception& e) { s->error = e.what(); s->controller->cancel(true); }
+            }
+            if (eof) {
+                if (p->error) close_poll(s->errors); else close_poll(s->output);
+                s->owner->settle(s);
+            }
+        }, 0, 10);
+        if (code) throw std::runtime_error(uv_strerror(code));
+    }
+    Poll* poll(const std::shared_ptr<Session>& s, int fd, bool error) {
+        auto* value = new Poll{{}, s, fd, error};
+        int code = uv_timer_init(&loop, &value->handle);
+        if (code) { delete value; ::close(fd); throw std::runtime_error(uv_strerror(code)); }
+        value->handle.data = value;
+        try { arm(value); } catch (...) { close_poll(value); throw; }
+        return value;
+    }
+#else
     void arm(Poll* p) {
         int events = UV_READABLE;
         if (!p->error && p->session->tty && !p->session->input.empty()) events |= UV_WRITABLE;
@@ -246,7 +317,20 @@ struct Runtime::Impl {
                 for (int round = 0; round < 32; ++round) {
                     const auto count = ::read(poll->fd, bytes, sizeof(bytes));
                     if (count > 0) {
-                        try { if (session->error.empty()) session->files->append(bytes, count); }
+                        try {
+                            if (session->error.empty()) {
+                                const auto amount = session->output_limit
+                                    ? std::min<id_t>(count, session->output_limit - session->captured)
+                                    : static_cast<id_t>(count);
+                                session->files->append(bytes, amount, poll->error);
+                                session->captured += amount;
+                                if (amount != static_cast<id_t>(count)) {
+                                    session->truncated = true;
+                                    session->error = "output_limit_exceeded: retained output is incomplete";
+                                    session->controller->cancel(true);
+                                }
+                            }
+                        }
                         catch (const std::exception& e) {
                             session->error = e.what();
                             session->controller->cancel(true);
@@ -275,9 +359,10 @@ struct Runtime::Impl {
         catch (...) { close_poll(value); throw; }
         return value;
     }
+#endif
     void spawn(const std::shared_ptr<Session>& s) {
         s->files = std::make_unique<OutputFiles>();
-        Child child = spawn_child(s->shell, s->command, s->cwd, s->tty, s->files->out, s->files->err);
+        Child child = spawn_child(s->shell, s->command, s->cwd, s->tty, s->files->out, s->files->err, s->output_limit != 0);
         s->pid = child.pid;
         try {
             if (child.output >= 0) s->output = poll(s, std::exchange(child.output, -1), false);
@@ -316,8 +401,12 @@ struct Runtime::Impl {
         if (s->settled || !s->exit_seen || s->output || s->errors) return;
         try {
             const auto status = reap_child(s->pid);
+#ifdef _WIN32
+            s->signal = 0; s->returncode = status;
+#else
             s->signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
             s->returncode = s->signal ? -s->signal : WEXITSTATUS(status);
+#endif
         } catch (const std::exception& e) { s->error = e.what(); }
         s->settled = true;
         auto* awaitable = std::exchange(s->awaitable, nullptr);
@@ -398,14 +487,24 @@ void Runtime::bind(std::function<void(const Event&)> notifier) {
 }
 void Runtime::run(id_t request, std::string shell, std::string command, std::string cwd,
                   bool tty, int wait_ms, int timeout_ms, int inline_limit) {
+    run_limited(request, std::move(shell), std::move(command), std::move(cwd), tty,
+                wait_ms, timeout_ms, inline_limit, 0);
+}
+void Runtime::run_limited(id_t request, std::string shell, std::string command, std::string cwd,
+                         bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit) {
     if (inline_limit < -1) throw std::invalid_argument("invalid output budget");
     if (wait_ms < 0 || timeout_ms < 0) throw std::invalid_argument("negative timeout");
     for (const auto* value : {&shell, &command, &cwd})
         if (value->find('\0') != std::string::npos) throw std::invalid_argument("NUL in command/path");
+#ifdef _WIN32
+    if (shell.empty() || !std::filesystem::u8path(shell).is_absolute() || command.empty()) throw std::invalid_argument("absolute shell path and command required");
+#else
     if (shell.empty() || shell.front() != '/' || command.empty()) throw std::invalid_argument("absolute shell path and command required");
+#endif
     auto session = std::make_shared<Impl::Session>(impl_.get(), request);
     session->shell = std::move(shell); session->command = std::move(command); session->cwd = std::move(cwd);
     session->inline_limit = inline_limit;
+    session->output_limit = output_limit;
     session->tty = tty; session->wait_ms = wait_ms; session->timeout_ms = timeout_ms;
     impl_->post(request, [owner = impl_.get(), session] { owner->begin(session); });
 }
@@ -434,8 +533,12 @@ void Runtime::resize(id_t request, id_t id, int rows, int columns) {
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
         if (!session->tty || !session->output || session->exit_seen) throw std::runtime_error("no live PTY");
+#ifdef _WIN32
+        throw std::runtime_error("pty_unsupported: Windows prototype has no ConPTY");
+#else
         winsize size{}; size.ws_row = rows; size.ws_col = columns;
         if (ioctl(session->output->fd, TIOCSWINSZ, &size)) throw std::runtime_error("resize failed");
+#endif
         impl_->emit(impl_->snapshot(session, request));
     });
 }

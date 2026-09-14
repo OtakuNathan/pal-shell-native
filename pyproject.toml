@@ -4,20 +4,24 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pal-shell-native"
-version = "0.1.0"
-description = "Optional in-process native shell execution backend for Pal"
+version = "0.2.0"
+description = "Native shell Runtime, authenticated RPC worker and remote client for Pal"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = ["msgpack>=1,<2", "cryptography>=44,<48"]
 license = "MIT"
 authors = [{name = "Nathan Wu"}]
 classifiers = ["Programming Language :: Python :: Implementation :: CPython", "Programming Language :: C++", "Operating System :: POSIX"]
+
+[project.scripts]
+pal-shell-worker = "pal_shell_worker.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/OtakuNathan/pal-shell-native"
 Issues = "https://github.com/OtakuNathan/pal-shell-native/issues"
 
 [tool.scikit-build]
-wheel.packages = []
+wheel.packages = ["python/pal_shell_worker"]
 install.components = ["native"]
 sdist.exclude = [".venv/**", "build/**", "dist/**", "**/__pycache__/**"]
 
@@ -25,7 +29,7 @@ sdist.exclude = [".venv/**", "build/**", "dist/**", "**/__pycache__/**"]
 build = "cp311-* cp312-* cp313-*"
 skip = "*-musllinux_* *-win*"
 build-verbosity = 1
-test-command = "python {project}/tests/test_backend.py"
+test-command = ["python {project}/tests/test_backend.py", "python {project}/tests/test_remote.py"]
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "manylinux_2_28"

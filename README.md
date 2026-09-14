@@ -172,3 +172,58 @@ ownership; an escaped descendant holding an output FD can delay cleanup. The
 spawn exec-error handshake is not covered by a cancellable startup deadline.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for dependency provenance and licenses.
+
+## Independent remote worker (0.2)
+
+This distribution also provides `pal-shell-worker` and `_pal_shell_rpc`.
+The worker owns the existing Runtime independently of client connections; no tmux
+or second Pal core is required. Its private Unix endpoint uses enrolled client
+signatures, normally reached over strict public-key SSH forwarding. Dynabridge
+provides the shell RPC projection and FF/libuv provides the async exchange.
+
+Run `pal-shell-worker --help`. `--generate-client-key PATH` creates a mode-0600
+identity without printing the private key. `--config FILE --write-service DIR
+--executable PATH` writes a systemd user unit or LaunchAgent without activation.
+`packaging/build_worker.py` builds a platform-specific standalone directory bundle
+with PyInstaller; CI archives it preserving executable permissions. Linux x86_64,
+Linux ARM64, Mac ARM64 and Mac Intel have separate build jobs.
+
+The worker config includes worker/client identity, client public key, socket path,
+Bash path, byte quotas and optional protected privilege helpers. Use a private
+socket directory. A worker restart changes its epoch and cannot recover prior
+sessions. Never remove a live worker socket or automatically replay an unknown
+execution. Real sudo/key-store, logout and physical power behavior require target
+acceptance. The service is a user process; the optional root-owned monitor is
+invoked only through actual sudo and must never be installed setuid.
+
+See the matching Pal tree's `docs/remote-shell.md` for complete configuration,
+permission, output delivery and lifecycle contracts. The new remote tests run as
+`python tests/test_remote.py` against the installed package. Existing `Runtime.run`
+callers retain their behavior; `run_limited` is an additional bounded-output entry.
+## Experimental Windows worker
+
+The Windows adapter reuses Runtime's session/reactor and FF completion state, with
+CreateProcessW and Job Objects owning noninteractive PowerShell processes and
+descendants. It supports background sessions, query/terminate, timeouts and bounded
+UTF-8 output. ConPTY, input/resize, privilege and machine power management are not
+implemented; unsupported operations fail before execution. This does not enable
+Pal's Python shell or claim Windows Pal client support.
+
+Build with CMake, a Windows C++ toolchain and matching Python development files.
+Run `tests/test_windows_worker.py` with both compiled extensions and `python/` on
+PYTHONPATH. `packaging/build_windows_worker.ps1` assembles an isolated directory
+bundle from a complete Python distribution with msgpack/cryptography installed,
+plus the compiled `.pyd` files. The independent `windows-prototype.yml` CI runs on
+Windows x64 / Python 3.13 for pull requests, main pushes and manual dispatch. It
+builds both native extensions, tests PowerShell sessions, then repeats those tests
+using the bundled interpreter and uploads a prototype ZIP with its SHA-256.
+Windows artifacts remain outside the official release matrix. This checks the
+worker, not Windows Pal clients or an SSH deployment.
+
+Configure an absolute PowerShell path, a private endpoint JSON path (`socket_path`),
+`tcp_port` and `shutdown_policy = "disabled"`. The server listens only on loopback;
+Pal's `worker_port` target setting forwards to it through authenticated SSH.
+RPC client identity enrollment is unchanged. Start the worker independently of
+the SSH session under an ordinary user, for example with a manually triggered,
+limited-privilege interactive Scheduled Task. No startup/shutdown actions are
+configured for this target. See Pal's `docs/remote-shell.md` for the full contract.

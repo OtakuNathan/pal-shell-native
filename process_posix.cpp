@@ -21,7 +21,7 @@
 namespace dynabridge::pal_shell {
 namespace {
 struct Fds {
-    std::array<int, 8> values{{-1, -1, -1, -1, -1, -1, -1, -1}};
+    std::array<int, 10> values{{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1}};
     std::size_t count = 0;
     ~Fds() { for (int fd : values) if (fd >= 0) ::close(fd); }
     void keep(int fd) { for (auto& item : values) if (item == fd) item = -1; }
@@ -60,9 +60,10 @@ std::vector<int> inherited_fds() {
 }
 
 Child spawn_child(const std::string& shell, const std::string& command,
-                  const std::string& cwd, bool tty, int stdout_fd, int stderr_fd) {
+                  const std::string& cwd, bool tty, int stdout_fd, int stderr_fd, bool capture) {
     Fds owned;
     int output[2] = {-1, stdout_fd}, exec_error[2];
+    int errors[2] = {-1, stderr_fd};
     int input = -1;
     if (tty) {
         winsize size{}; size.ws_row = 24; size.ws_col = 80;
@@ -74,6 +75,7 @@ Child spawn_child(const std::string& shell, const std::string& command,
         input = open("/dev/null", O_RDONLY | O_CLOEXEC);
         if (input < 0) throw std::system_error(errno, std::generic_category());
         owned.add(input);
+        if (capture) { owned.pipe(output); owned.pipe(errors); }
     }
     owned.pipe(exec_error);
     const auto descriptors = inherited_fds();
@@ -83,7 +85,7 @@ Child spawn_child(const std::string& shell, const std::string& command,
     const char* directory = cwd.c_str();
     char* const argv[] = {const_cast<char*>(shell_path), const_cast<char*>("-lc"),
                          const_cast<char*>(command.c_str()), nullptr};
-    const int error_output = tty ? output[1] : stderr_fd;
+    const int error_output = tty ? output[1] : errors[1];
     pid_t pid = fork();
     if (pid < 0) throw std::system_error(errno, std::generic_category());
     if (pid == 0) {
@@ -110,8 +112,9 @@ Child spawn_child(const std::string& shell, const std::string& command,
         while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
         throw std::system_error(error ? error : EIO, std::generic_category(), "shell spawn");
     }
-    if (tty) owned.keep(output[0]);
-    return {pid, output[0], -1};
+    if (output[0] >= 0) owned.keep(output[0]);
+    if (errors[0] >= 0) owned.keep(errors[0]);
+    return {pid, output[0], errors[0]};
 }
 
 int observe_exit(pid_t pid) {

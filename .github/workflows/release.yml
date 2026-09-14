@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-24.04-arm, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -54,6 +54,31 @@ jobs:
           cmake -S . -B build/check -DBUILD_TESTING=ON -DPython3_EXECUTABLE="$(command -v python)"
           cmake --build build/check --parallel 2
           ctest --test-dir build/check --output-on-failure
+  worker-bundles:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install . pyinstaller
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      - run: python tests/test_remote.py
+      - run: python packaging/build_worker.py
+      - run: dist/pal-shell-worker/pal-shell-worker --help
+      - run: python tests/test_worker_bundle.py dist/pal-shell-worker/pal-shell-worker
+      - run: tar -czf dist/pal-shell-worker-${{ matrix.os }}.tar.gz -C dist pal-shell-worker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-${{ matrix.os }}
+          path: dist/pal-shell-worker-*.tar.gz
+          if-no-files-found: error
   source:
     runs-on: ubuntu-latest
     steps:
@@ -79,7 +104,7 @@ jobs:
           if-no-files-found: error
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, integration, source]
+    needs: [wheels, integration, source, worker-bundles]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,8 +112,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: worker-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+          path: dist
       - name: Prepare verified release assets
         env:
           RELEASE_TAG: ${{ github.ref_name }}
