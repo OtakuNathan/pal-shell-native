@@ -7,6 +7,8 @@
   non-setuid root monitor, with physical-target acceptance still required.
 - Generate Linux user-service / Mac LaunchAgent definitions without activation.
 - Build standalone worker archives and Mac Intel wheels alongside existing platforms.
+- Ship the Pal-side remote Hub/Slot plugin as a companion palpkg using Pal's
+  existing package installation and lifecycle, with native prerequisite checks.
 - Preserve existing local Runtime API and add optional hard output bounds.
 - Add an experimental Windows PowerShell process adapter using the same Runtime,
   with Job Object cancellation and SSH-forwarded loopback RPC. No ConPTY or power

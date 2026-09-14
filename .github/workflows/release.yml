@@ -79,6 +79,26 @@ jobs:
           name: worker-${{ matrix.os }}
           path: dist/pal-shell-worker-*.tar.gz
           if-no-files-found: error
+  remote-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/checkout@v4
+        with:
+          repository: OtakuNathan/Pal
+          ref: da16c294f143d040f3bfc064411c4244156cefeb
+          path: .pal
+      - run: python -m pip install ./.pal
+      - run: pal package build pal_plugin --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-plugin
+          path: dist/plugin-remote-*.palpkg
+          if-no-files-found: error
   source:
     runs-on: ubuntu-latest
     steps:
@@ -104,7 +124,7 @@ jobs:
           if-no-files-found: error
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, integration, source, worker-bundles]
+    needs: [wheels, integration, source, worker-bundles, remote-plugin]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -124,6 +144,10 @@ jobs:
         with:
           name: source
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: remote-plugin
+          path: dist
       - name: Prepare verified release assets
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -135,7 +159,7 @@ jobs:
           PY
           cp README.md THIRD_PARTY.md tests/test_backend.py dist/
           cd dist
-          sha256sum *.whl *.tar.gz README.md THIRD_PARTY.md test_backend.py > SHA256SUMS
+          sha256sum *.whl *.tar.gz *.palpkg README.md THIRD_PARTY.md test_backend.py > SHA256SUMS
       - name: Publish after all acceptance jobs pass
         env:
           GH_TOKEN: ${{ github.token }}

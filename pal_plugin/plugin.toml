@@ -1,0 +1,9 @@
+plugin_id = "remote"
+entrypoint = "pal_shell_remote.plugin"
+version = "0.2.0"
+enabled_by_default = true
+lifecycle_protocol = "raii.v1"
+module_id = "remote"
+requires_plugins = []
+requires_ports = ["execution:native_shell_targets"]
+reload_modules = ["pal_shell_remote"]

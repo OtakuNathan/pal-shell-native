@@ -200,6 +200,31 @@ See the matching Pal tree's `docs/remote-shell.md` for complete configuration,
 permission, output delivery and lifecycle contracts. The new remote tests run as
 `python tests/test_remote.py` against the installed package. Existing `Runtime.run`
 callers retain their behavior; `run_limited` is an additional bounded-output entry.
+## Companion Pal plugin
+
+`pal_plugin/` owns the client-side remote Hub, target Slots and plugin manifest.
+It ships as `plugin-remote-0.2.0.palpkg` alongside the native wheels and independent
+worker bundles. The worker needs no Pal installation; the client plugin runs in
+Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
+
+With Pal's package tools installed, build using:
+
+```sh
+pal package build pal_plugin --output dist
+```
+
+Install the matching native wheel into Pal's interpreter first, then use
+`pal package install dist/plugin-remote-0.2.0.palpkg --runtime-root <runtime-root>`
+for offline preparation, or the running host's authorized package installation
+flow. Verification checks the native Runtime, RPC client and resident Pal contract;
+it does not install dependencies or restart services. The plugin uses the existing
+community package lifecycle and defaults to enabled. A missing or empty target
+configuration starts no Hub process. Native wheel installation alone does not
+install the companion palpkg into any runtime.
+
+Pal integration tests need `pal_plugin` on PYTHONPATH when testing source checkouts.
+Standalone worker bundles intentionally contain only the worker-side package.
+
 ## Experimental Windows worker
 
 The Windows adapter reuses Runtime's session/reactor and FF completion state, with
