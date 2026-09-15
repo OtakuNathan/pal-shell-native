@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 import io
 import os
+import shlex
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -44,12 +45,12 @@ class SetupTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == 'nt', 'POSIX enrollment flow')
     def test_enrollment_templates_and_readability_without_capturing_password(self):
-        for confirmation, results, expected in [('STORE', [0, 0], 0), ('', [], 0), ('STORE', [1], 1), ('STORE', [0, 1], 1)]:
-            with self.subTest(confirmation=confirmation, results=results), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+        for confirmation, results, expected in [('STORE', [0, 0], 0), ('', [], 0), ('STORE', [1], 1), ('STORE', [0, 1], 1), (EOFError(), [], 1), (KeyboardInterrupt(), [], 130)]:
+            with self.subTest(confirmation=confirmation, results=results), tempfile.TemporaryDirectory(prefix='sudo setup ') as temporary, ExitStack() as stack:
                 root = Path(temporary)
                 config = SimpleNamespace(worker_id='worker', client_id='pal', client_public_key='ab'*32,
                     socket_path=root/'worker.sock', shell='/bin/bash', privilege_helper='', askpass_helper='')
-                stack.enter_context(patch.object(sudo_setup.sys, 'platform', 'linux'))
+                stack.enter_context(patch.object(sudo_setup.sys, 'platform', 'darwin'))
                 stack.enter_context(patch.object(sudo_setup.sys, 'stdin', Terminal()))
                 stack.enter_context(patch.object(sudo_setup.sys, 'stderr', Terminal()))
                 output = stack.enter_context(patch.object(sudo_setup.sys, 'stdout', Terminal()))
@@ -77,6 +78,9 @@ class SetupTests(unittest.TestCase):
                 self.assertNotIn('password', auth)
                 self.assertEqual(plan.stat().st_mode & 0o777, 0o700)
                 self.assertIn('Sudo is not yet verified' if results == [0, 0] else 'Configuration templates', output.getvalue())
+                self.assertIn('on THIS remote machine', output.getvalue())
+                self.assertIn(f'cat {shlex.quote(str(plan / "NEXT_STEPS.txt"))}', output.getvalue())
+                self.assertTrue((plan / 'NEXT_STEPS.txt').exists())
 
 
 if __name__ == '__main__':

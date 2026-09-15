@@ -18,6 +18,10 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.key = Ed25519PrivateKey.generate()
         self.worker = Worker(WorkerConfig('test-worker', 'test-client', self.key.public_key().public_bytes_raw().hex(), self.path/'worker.sock', output_limit=4096, retained_limit=8192))
         await self.worker.start()
+        from unittest.mock import AsyncMock, patch
+        self.management_probe = patch('pal_shell_worker.privilege.management_status', new=AsyncMock(return_value={'ok':True,'allowed_actions':['shutdown']}))
+        self.management_probe.start()
+        self.addCleanup(self.management_probe.stop)
         self.clients = []
         self.client = await self.connect()
 
@@ -110,7 +114,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
     async def test_shutdown_requires_bound_grant_and_refuses_busy(self):
         from dataclasses import replace
         from pal_shell_worker.protocol import canonical
-        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',))
+        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',), management_helper='/usr/bin/true', management_actions=('shutdown',))
         args = {'operation_id': uuid4().hex, 'action': 'shutdown', 'target': 1, 'protected_machine_id': 'different-client-machine'}
         prepared = await self.client.request('prepare_privileged', args)
         waiting = await asyncio.wait_for(self.query(args['operation_id']), 1)
@@ -132,7 +136,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shutdown_cannot_alias_client_host(self):
         from dataclasses import replace
-        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',))
+        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',), management_helper='/usr/bin/true', management_actions=('shutdown',))
         with self.assertRaises(RemoteError) as error:
             await self.client.request('prepare_privileged', {'operation_id': uuid4().hex, 'action': 'shutdown',
                 'target': 9, 'protected_machine_id': self.worker.info['machine_identity']})
@@ -141,7 +145,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_approval_never_starts_shutdown(self):
         from dataclasses import replace
         from pal_shell_worker.protocol import canonical
-        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',))
+        self.worker.config = replace(self.worker.config, shutdown_argv=('/usr/bin/true',), management_helper='/usr/bin/true', management_actions=('shutdown',))
         args = {'operation_id': uuid4().hex, 'action': 'shutdown', 'target': 1, 'protected_machine_id': 'other'}
         prepared = await self.client.request('prepare_privileged', args)
         self.worker.operations[args['operation_id']].expires_at = 0
@@ -195,14 +199,62 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         op.nonce, op.expires_at = 'nonce', time.time()+60
         grant = approval_payload(self.worker, op)
         signed = {'approval': grant, 'signature': self.key.sign(canonical(grant)).hex()}
+        with self.assertRaises(RemoteError):
+            consume_authentication(self.worker, signed)
+        op.auth_available = True  # Commit, not record creation, enables consumption.
         result = consume_authentication(self.worker, signed)
         self.assertEqual(result, {'authorized': True})
         with self.assertRaises(RemoteError):
             consume_authentication(self.worker, signed)
         op.auth_consumed = False
-        op.state = 'complete'  # E.g. sudo needed no authentication; no spare grant survives.
+        op.auth_available = True
+        self.worker._finish(op, {'status':'exited'})  # No spare grant survives process exit.
         with self.assertRaises(RemoteError):
             consume_authentication(self.worker, signed)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux management')
+    async def test_async_privilege_grant_survives_snapshot_but_not_process_exit(self):
+        from dataclasses import replace
+        from unittest.mock import patch, AsyncMock
+        from pal_shell_worker.privilege import consume_authentication
+        from pal_shell_worker.protocol import canonical, TERMINAL
+        import shlex
+        self.worker.config = replace(self.worker.config, management_helper='/usr/bin/true',
+                                     management_actions=('apt_update',))
+        original = self.worker._native
+        gate = self.worker.config.socket_path.parent/'finish-privileged-test'
+        async def harmless(method, *args):
+            if method == 'run_limited':
+                args = list(args)
+                args[1] = 'while [ ! -f ' + shlex.quote(str(gate)) + ' ]; do sleep .01; done'
+            return await original(method, *args)
+        self.worker._native = harmless  # Exercise real Runtime/session; never invoke sudo.
+        with patch('pal_shell_worker.privilege.management_status',
+                   AsyncMock(return_value={'ok':True,'allowed_actions':['apt_update']})):
+            for wait, consume in ((0, True), (1, True), (0, False)):
+                gate.unlink(missing_ok=True)
+                oid = uuid4().hex
+                prepared = await self.client.request('prepare_privileged', {'operation_id':oid,
+                    'action':'sudo','target':1,'cmd':'apt update','wait_ms':wait})
+                signed = {'approval':prepared['approval'],
+                          'signature':self.key.sign(canonical(prepared['approval'])).hex()}
+                await self.client.request('commit_privileged', {'operation_id':oid,'signature':signed['signature']})
+                response = await self.query(oid)
+                self.assertEqual(response['state'], 'complete')
+                self.assertEqual(response['result']['status'], 'running')
+                if consume:
+                    self.assertEqual(consume_authentication(self.worker, signed, management=True), {'authorized':True})
+                    with self.assertRaises(RemoteError):
+                        consume_authentication(self.worker, signed, management=True)
+                gate.touch()
+                async with asyncio.timeout(3):
+                    while self.worker.outputs[response['result']['output_id']]['event']['status'] not in TERMINAL:
+                        await asyncio.sleep(.01)
+                self.assertFalse(self.worker.operations[oid].auth_available)
+                with self.assertRaises(RemoteError):
+                    consume_authentication(self.worker, signed, management=True)
+                await self.client.request('release', {'output_id':response['result']['output_id']})
+        self.worker._native = original
 
     async def test_askpass_refuses_ordinary_parent_before_contacting_store(self):
         import base64

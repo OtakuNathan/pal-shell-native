@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pal-shell-native"
-version = "0.2.0"
+version = "0.3.0"
 description = "Native shell Runtime, authenticated RPC worker and remote client for Pal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,7 @@ sdist.exclude = [".venv/**", "build/**", "dist/**", "**/__pycache__/**"]
 build = "cp311-* cp312-* cp313-*"
 skip = "*-musllinux_* *-win*"
 build-verbosity = 1
-test-command = ["python {project}/tests/test_backend.py", "python {project}/tests/test_remote.py", "python {project}/tests/test_sudo_setup.py"]
+test-command = ["python {project}/tests/test_backend.py", "python {project}/tests/test_remote.py", "python {project}/tests/test_sudo_setup.py", "python {project}/tests/test_transport.py"]
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "manylinux_2_28"

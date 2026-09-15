@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import secrets
 import stat
+import socket
+import sys
 import time
 from uuid import uuid4
 
@@ -20,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from . import PROTOCOL_VERSION
 from .metadata import probe, shell_info
 from .protocol import (RemoteError, TERMINAL, OUTPUT_BYTES, RETAINED_BYTES, CHUNK_BYTES,
-                       auth_message, canonical, decode, digest, integer, read_frame, send_response, text)
+                       auth_message, canonical, decode, encode, digest, integer, text)
 
 
 @dataclass(frozen=True)
@@ -40,13 +42,17 @@ class WorkerConfig:
     credential_ref: str = ''
     privilege_helper: str = ''
     askpass_helper: str = ''
+    management_helper: str = ''
+    management_actions: tuple[str, ...] = ()
     tcp_port: int | None = None
 
     def __post_init__(self):
         if self.tcp_port is not None:
             integer(self.tcp_port, 'tcp_port', 0, 65535)
-        if os.name == 'nt' and (self.shutdown_argv or self.privilege_helper or self.askpass_helper):
+        if os.name == 'nt' and (self.shutdown_argv or self.privilege_helper or self.askpass_helper or self.management_helper or self.management_actions):
             raise ValueError('Windows worker has no power or privilege management')
+        if set(self.management_actions) - {'apt_update','apt_install','shutdown'}:
+            raise ValueError('Unsupported management action')
         text(self.worker_id, 'worker_id', limit=128)
         text(self.client_id, 'client_id', limit=128)
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.client_public_key))
@@ -76,6 +82,7 @@ class Operation:
     nonce: str = ''
     expires_at: float = 0
     auth_consumed: bool = False
+    auth_available: bool = False
     approval_signature: str = ''
 
     def snapshot(self):
@@ -108,6 +115,9 @@ class Worker:
         self.reservations = set()
         self.snapshot_key = secrets.token_bytes(32)
         self.info = None
+        self.management_probe = None
+        from .transport import Executor
+        self.rpc_executor = Executor()
         self.server = None
         self.socket_identity = None
         native.connect(self.runtime, lambda event: self.loop.call_soon_threadsafe(self._deliver, dict(event)))
@@ -128,11 +138,11 @@ class Worker:
             import json
             if self.config.tcp_port is None:
                 raise RemoteError('endpoint_unsupported', 'Windows worker requires a loopback tcp_port')
-            self.server = await asyncio.start_server(self._connection, host='127.0.0.1', port=self.config.tcp_port, limit=1024 * 1024)
+            self._listen(socket.AF_INET, ('127.0.0.1', self.config.tcp_port))
             with path.open('x') as endpoint:
                 json.dump({'port': self.server.sockets[0].getsockname()[1], 'pid': os.getpid(), 'runtime_epoch': self.epoch}, endpoint)
         else:
-            self.server = await asyncio.start_unix_server(self._connection, path=str(path), limit=1024 * 1024)
+            self._listen(socket.AF_UNIX, str(path))
             os.chmod(path, 0o600)
         self.socket_identity = (path.stat().st_dev, path.stat().st_ino)
         return self
@@ -142,8 +152,7 @@ class Worker:
         self.changed.set()
         if self.server:
             self.server.close()
-        for writer in list(self.connections):
-            writer.close()
+        await asyncio.gather(*(c.close() for c in list(self.connections)), return_exceptions=True)
         if self.server:
             await self.server.wait_closed()
         await asyncio.to_thread(self.runtime.close)
@@ -155,6 +164,7 @@ class Worker:
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(RemoteError('worker_closed', 'Worker stopped', effect='unknown'))
+        await self.rpc_executor.close()
         path = self.config.socket_path
         try:
             s = path.lstat()
@@ -169,54 +179,98 @@ class Worker:
         task.add_done_callback(self.tasks.discard)
         return task
 
-    async def _connection(self, reader, writer):
-        self.connections.add(writer)
+    def _listen(self, family, address):
+        from .transport import Listener
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.setblocking(False)
+        sock.bind(address)
+        sock.listen(32)
+        self.server = Listener(self.rpc_executor, sock, lambda client: self._task(self._connection(client)))
+
+    async def _connection(self, sock):
+        from .transport import Channel
+        channel = Channel(self.rpc_executor, sock)
+        self.connections.add(channel)
         nonce, deadline, authenticated = secrets.token_hex(32), time.monotonic() + 30, False
+        handlers = set()
+        last_id = 0
+
+        async def dispatch(identifier, frame, request):
+            try:
+                args = request.get('params', {})
+                if not isinstance(args, dict):
+                    raise RemoteError('invalid_request', 'params must be an object')
+                if args.get('runtime_epoch') != self.epoch:
+                    raise RemoteError('runtime_changed', 'Runtime identity changed', effect='unknown', operation_id=str(args.get('operation_id', '')))
+                result = await self.handle(request.get('method'), {k:v for k,v in args.items() if k != 'runtime_epoch'})
+                reply = {'ok': True, 'result': result}
+            except RemoteError as exc:
+                reply = {'ok': False, 'error': exc.payload()}
+            except (ValueError, TypeError, KeyError):
+                reply = {'ok': False, 'error': RemoteError('invalid_request', 'Malformed shell request').payload()}
+            except Exception:
+                reply = {'ok': False, 'error': RemoteError('execution_unknown',
+                    'Worker could not confirm the request outcome', effect='unknown').payload()}
+            if not channel.closed:
+                try:
+                    channel.send(identifier, wire.respond(frame, encode(reply)))
+                except (RemoteError, RuntimeError):
+                    await channel.close()
+
         try:
             while not self.closed:
-                frame = await asyncio.wait_for(read_frame(reader), timeout=90 if authenticated else 30)
-                try:
-                    request = decode(wire.unpack(frame))
-                    method, args = request.get('method'), request.get('params', {})
-                    if not isinstance(args, dict):
-                        raise RemoteError('invalid_request', 'params must be an object')
-                    if not authenticated:
-                        if method == 'consume_privileged':
-                            from .privilege import consume_authentication
-                            result = consume_authentication(self, args)
-                        elif method == 'hello':
-                            result = {'nonce': nonce, 'worker_id': self.config.worker_id,
-                                      'runtime_epoch': self.epoch, 'protocol_version': PROTOCOL_VERSION}
-                        elif method == 'authenticate' and time.monotonic() <= deadline:
-                            if args.get('client_id') != self.config.client_id:
-                                raise RemoteError('unauthorized', 'Client identity is not enrolled')
-                            try:
-                                key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.config.client_public_key))
-                                key.verify(bytes.fromhex(args['signature']), auth_message(nonce, self.config.worker_id, self.epoch, self.config.client_id))
-                            except Exception as exc:
-                                raise RemoteError('unauthorized', 'Client signature rejected') from exc
-                            authenticated = True
-                            result = {'authenticated': True, 'runtime_epoch': self.epoch}
-                        else:
-                            raise RemoteError('unauthorized', 'Authenticated client connection required')
+                if authenticated:
+                    identifier, frame = await channel.receive()
+                else:
+                    identifier, frame = await asyncio.wait_for(channel.receive(), max(0, deadline-time.monotonic()))
+                request = decode(wire.unpack(frame))
+                if not isinstance(request, dict) or not isinstance(request.get('params', {}), dict):
+                    raise RemoteError('invalid_request', 'Request and params must be objects')
+                if authenticated:
+                    if identifier <= last_id:
+                        raise RemoteError('invalid_request_id', 'Request IDs must be unique and increasing')
+                    last_id = identifier
+                    if len(handlers) >= 32:
+                        channel.send(identifier, wire.respond(frame, encode({'ok':False,'error':RemoteError('transport_capacity','Worker request limit reached').payload()})))
                     else:
-                        if args.get('runtime_epoch') != self.epoch:
-                            raise RemoteError('runtime_changed', 'Runtime identity changed; old execution effects are unknown', effect='unknown', operation_id=str(args.get('operation_id', '')))
-                        result = await self.handle(method, {k: v for k, v in args.items() if k != 'runtime_epoch'})
-                    await send_response(writer, frame, {'ok': True, 'result': result})
+                        task = asyncio.create_task(dispatch(identifier, frame, request))
+                        handlers.add(task)
+                        task.add_done_callback(handlers.discard)
+                    continue
+                if identifier:
+                    raise RemoteError('unauthorized', 'Authenticate before multiplexed requests')
+                try:
+                    method, args = request.get('method'), request.get('params', {})
+                    if method in ('consume_privileged', 'consume_management'):
+                        from .privilege import consume_authentication
+                        result = consume_authentication(self, args, management=method == 'consume_management')
+                    elif method == 'hello':
+                        result = {'nonce':nonce, 'worker_id':self.config.worker_id,
+                                  'runtime_epoch':self.epoch, 'protocol_version':PROTOCOL_VERSION}
+                    elif method == 'authenticate' and time.monotonic() <= deadline:
+                        if args.get('client_id') != self.config.client_id:
+                            raise RemoteError('unauthorized', 'Client identity is not enrolled')
+                        try:
+                            key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.config.client_public_key))
+                            key.verify(bytes.fromhex(args['signature']), auth_message(nonce,self.config.worker_id,self.epoch,self.config.client_id))
+                        except Exception as exc:
+                            raise RemoteError('unauthorized', 'Client signature rejected') from exc
+                        authenticated = True
+                        result = {'authenticated':True,'runtime_epoch':self.epoch}
+                    else:
+                        raise RemoteError('unauthorized', 'Authenticated client connection required')
+                    reply = {'ok':True,'result':result}
                 except RemoteError as exc:
-                    await send_response(writer, frame, {'ok': False, 'error': exc.payload()})
-                except (ValueError, TypeError, KeyError) as exc:
-                    await send_response(writer, frame, {'ok': False, 'error': RemoteError('invalid_request', 'Malformed shell request').payload()})
-        except (OSError, asyncio.IncompleteReadError, TimeoutError, RemoteError, RuntimeError):
+                    reply = {'ok':False,'error':exc.payload()}
+                channel.send(0, wire.respond(frame, encode(reply)))
+        except (OSError, TimeoutError, RemoteError, RuntimeError, ValueError):
             pass
         finally:
-            self.connections.discard(writer)
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except OSError:
-                pass
+            for task in handlers:
+                task.cancel()  # Execution tasks belong to Worker._task, not the connection.
+            await asyncio.gather(*handlers, return_exceptions=True)
+            await channel.close()
+            self.connections.discard(channel)
 
     async def _native(self, method, *args):
         request = next(self.sequence)
@@ -251,6 +305,9 @@ class Worker:
             previous = self.outputs.get(token)
             if previous is None or previous['event']['status'] not in TERMINAL or event['status'] in TERMINAL:
                 self.outputs[token] = {'native_id': output, 'event': dict(event)}
+            owner = self.operations.get(self.native_owners.get(output, ''))
+            if owner and self.outputs[token]['event']['status'] in TERMINAL:
+                owner.auth_available = False
             lengths = [token, event['stdout_total'], event['stderr_total'], self.epoch]
             raw = canonical(lengths)
             signature = hmac.new(self.snapshot_key, raw, hashlib.sha256).digest()
@@ -276,6 +333,8 @@ class Worker:
         return op, True
 
     def _finish(self, op, result=None, error=None):
+        if error or (result or {}).get('status') in TERMINAL | {'accepted'}:
+            op.auth_available = False
         op.state = 'failed' if error else 'complete'
         op.result, op.error = result, error.payload() if error else None
         op.done.set()
@@ -311,14 +370,20 @@ class Worker:
             from .privilege import trusted_executable
             if args.get('refresh'):
                 self.info = await asyncio.to_thread(probe, await asyncio.to_thread(shell_info, self.config.shell))
+                if sys.platform.startswith('linux'):
+                    from .privilege import management_status
+                    self.management_probe = await management_status(self)
             active = sum(item['event']['status'] not in TERMINAL for item in self.outputs.values())
             return {**self.info, 'worker_id': self.config.worker_id, 'runtime_epoch': self.epoch,
                     'protocol_version': PROTOCOL_VERSION, 'active_tasks': active, 'draining': self.draining,
                     'retained_outputs': len(self.outputs), 'reserved_bytes': len(self.reservations) * self.config.output_limit,
                     'limits': {'output_bytes': self.config.output_limit, 'retained_bytes': self.config.retained_limit,
-                               'chunk_bytes': CHUNK_BYTES}, 'privilege': {'configured': bool(self.config.privilege_helper),
-                               'supported': trusted_executable(self.config.privilege_helper) and trusted_executable(self.config.askpass_helper),
-                               'credential_state': 'remote_only_not_probed', 'approval_required': True}, 'power': {'shutdown': bool(self.config.shutdown_argv),
+                               'chunk_bytes': CHUNK_BYTES}, 'privilege': {'mode': 'signed_sudoers' if sys.platform.startswith('linux') else ('keychain' if sys.platform == 'darwin' else 'unsupported'),
+                               'allowed_actions': list(self.config.management_actions),
+                               'installation': self.management_probe or {'ok':False,'reason':'not_probed'},
+                               'configured': bool(self.config.management_helper or self.config.privilege_helper),
+                               'supported': trusted_executable(self.config.management_helper) if sys.platform.startswith('linux') else trusted_executable(self.config.privilege_helper) and trusted_executable(self.config.askpass_helper),
+                               'credential_state': 'not_required' if sys.platform.startswith('linux') else 'remote_only_not_probed', 'approval_required': True}, 'power': {'shutdown': bool('shutdown' in self.config.management_actions and trusted_executable(self.config.management_helper)) if sys.platform.startswith('linux') else bool(self.config.shutdown_argv),
                                'policy': self.config.shutdown_policy}}
         if method == 'query':
             op = self.operations.get(text(args.get('operation_id'), 'operation_id', limit=128))
@@ -330,7 +395,11 @@ class Worker:
                     await asyncio.wait_for(op.done.wait(), wait / 1000)
                 except TimeoutError:
                     pass
-            return op.snapshot()
+            snapshot = op.snapshot()
+            if op.method == 'privileged' and sys.platform.startswith('linux'):
+                from .privilege import management_status
+                snapshot['management_journal'] = await management_status(self, op.operation_id)
+            return snapshot
         if method in {'submit', 'session'}:
             params = {k: v for k, v in args.items() if k != 'operation_id'}
             if method == 'submit':

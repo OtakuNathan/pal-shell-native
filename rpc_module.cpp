@@ -19,6 +19,8 @@
 #include <memory>
 #include <stdexcept>
 
+#include "rpc_transport.h"
+
 namespace {
 namespace ff = flux_foundry;
 using Bytes = dynabridge::rpc::bytes;
@@ -160,6 +162,15 @@ PyObject* respond(PyObject*, PyObject* args) {
         return PyBytes_FromStringAndSize(reinterpret_cast<const char*>(b.data()), b.size());
     } catch (const std::exception& e) { return failure(e); }
 }
+PyObject* response_payload(PyObject*, PyObject* arg) {
+    if (!PyBytes_Check(arg)) { PyErr_SetString(PyExc_TypeError, "bytes required"); return nullptr; }
+    try {
+        auto* p = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(arg));
+        auto value = dynabridge::rpc::detail::decode_response(Bytes(p,p+PyBytes_GET_SIZE(arg)));
+        if (value.kind()!=dynabridge::rpc::value_kind::string) throw std::runtime_error("Invalid shell response");
+        return PyBytes_FromStringAndSize(value.string_data(),value.string_size());
+    } catch(const std::exception& e) { return failure(e); }
+}
 #ifndef _WIN32
 PyObject* exchange_frame(PyObject*, PyObject* args) {
     int fd, timeout; const char* raw; Py_ssize_t count;
@@ -202,6 +213,14 @@ PyObject* exchange_frame(PyObject*, PyObject* args) {
 }
 #endif
 PyMethodDef methods[] = {
+    {"loop_new", shell_transport::make_loop, METH_NOARGS, nullptr},
+    {"loop_close", shell_transport::close_loop, METH_O, nullptr},
+    {"channel_open", shell_transport::open_channel, METH_VARARGS, nullptr},
+    {"channel_request", shell_transport::request_frame, METH_VARARGS, nullptr},
+    {"channel_cancel", shell_transport::cancel_request, METH_VARARGS, nullptr},
+    {"channel_send", shell_transport::send_frame, METH_VARARGS, nullptr},
+    {"channel_close", shell_transport::close_channel, METH_O, nullptr},
+    {"response_payload", response_payload, METH_O, nullptr},
     {"pack", pack, METH_O, nullptr}, {"unpack", unpack, METH_O, nullptr},
     { "respond", respond, METH_VARARGS, nullptr},
 #ifndef _WIN32

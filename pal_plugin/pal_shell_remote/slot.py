@@ -6,9 +6,10 @@ from pathlib import Path
 import re
 import tempfile
 
-from pal.foundation.fd_lease import FdLease, FdCloseOutcome
+from pal.foundation.fd_lease import FdLease, FdCloseOutcome, FdLeaseInvariantError
 from pal_shell_worker.client import Connection, load_private_key
 from pal_shell_worker.protocol import RemoteError
+from .admission import RequestAdmission
 
 
 @dataclass(frozen=True)
@@ -57,9 +58,14 @@ async def close_connection(connection):
 
 
 class RemoteSlot:
-    def __init__(self, config):
+    def __init__(self, config, executor=None):
+        from pal_shell_worker.transport import Executor
+        self.executor = executor or Executor()
+        self.owns_executor = executor is None
+        self.connection = None
         self.config = config
         self.lock = asyncio.Lock()
+        self.admission = RequestAdmission()
         self.lease = None
         self.epoch = None
         self.tunnel = None
@@ -75,6 +81,7 @@ class RemoteSlot:
             if not self.lease.closed:
                 raise RemoteError('transport_quarantined', 'Prior transport has not drained')
             self.lease = None
+        self.connection = None
         if self.tunnel:
             if self.tunnel.returncode is None:
                 self.tunnel.terminate()
@@ -111,45 +118,61 @@ class RemoteSlot:
                         raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; inspect configured identity and host enrollment')
                     await asyncio.sleep(.05)
         connection = Connection(path, client_id=c.client_id, private_key=load_private_key(c.client_key),
-                                worker_id=c.worker_id, epoch=self.epoch)
+                                worker_id=c.worker_id, epoch=self.epoch, executor=self.executor)
         try:
             await connection.connect()
         except BaseException:
             await connection.close()
             raise
+        self.connection = connection
         self.epoch = connection.epoch
-        self.lease = FdLease('remote_rpc', connection, capacity=1, closer_async=close_connection,
+        self.lease = FdLease('remote_rpc', connection, capacity=32, closer_async=close_connection,
                              hard_closer_async=close_connection, close_drain_timeout=5)
 
     async def request(self, method, params, epoch=None):
+        async with self.admission.permit():
+            return await self._request(method, params, epoch)
+
+    async def _request(self, method, params, epoch=None):
         async with self.lock:
+            if self.closed:
+                raise RemoteError('backend_unavailable', 'Target connection has been detached')
+            if self.connection and self.connection.closed:
+                await self._disconnect()
             if epoch and self.epoch and epoch != self.epoch:
                 raise RemoteError('runtime_changed', 'Ticket belongs to another Runtime instance', effect='unknown')
             if not self.lease:
                 try:
                     await self._connect()
-                except RemoteError:
-                    await self._disconnect()
-                    raise
                 except (OSError, TimeoutError, ValueError) as exc:
                     await self._disconnect()
-                    raise RemoteError('connection_unavailable', 'Cannot authenticate the configured endpoint') from exc
+                    raise RemoteError('connection_unavailable',
+                        'Connection setup failed before command submission; inspect SSH and enrolled identity') from exc
+                except BaseException:
+                    await self._disconnect()
+                    raise
             if epoch and epoch != self.epoch:
                 raise RemoteError('runtime_changed', 'Ticket belongs to another Runtime instance', effect='unknown')
-            capability = self.lease.acquire(operation_id=method)
-            reuse = True
+            lease, connection = self.lease, self.connection
+            task = asyncio.current_task()
+            loop = asyncio.get_running_loop()
             try:
-                result = await capability.call_async(lambda connection: connection.request(method, params,
-                    timeout_ms=max(35000, int(params.get('wait_ms', 0)) + 5000)))
-                self.last_error = ''
-                return result
-            except BaseException:
-                reuse = False
-                raise
-            finally:
-                await capability.release_async(reuse=reuse)
-                if not reuse:
-                    await self._disconnect()
+                capability = lease.acquire(operation_id=method,
+                    interrupt=lambda connection, reason: loop.call_soon_threadsafe(task.cancel))
+            except FdLeaseInvariantError as exc:
+                raise RemoteError('transport_unavailable',
+                    'Transport admission changed before sending the request') from exc
+        try:
+            result = await capability.call_async(lambda c: c.request(method, params,
+                timeout_ms=max(35000, int(params.get('wait_ms') or 0) + 5000)))
+            self.last_error = ''
+            return result
+        finally:
+            await capability.release_async(reuse=not connection.closed)
+            if connection.closed:
+                async with self.lock:
+                    if self.lease is lease:
+                        await self._disconnect()
 
     async def describe(self, refresh=False):
         reachable = None
@@ -194,6 +217,9 @@ class RemoteSlot:
             return {'status': 'start_action_completed', 'returncode': code, 'target': self.config.target}
 
     async def close(self):
+        self.closed = True
+        self.admission.close()
         async with self.lock:
-            self.closed = True
             await self._disconnect()
+        if self.owns_executor:
+            await self.executor.close()

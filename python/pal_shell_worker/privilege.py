@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import shlex
 import time
+import sys
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -44,6 +45,9 @@ async def execute_privileged(worker, op):
             if worker.reservations or worker.outputs or any(x.state == 'pending' and x is not op for x in worker.operations.values()):
                 worker.draining = False
                 raise RemoteError('target_busy', 'Active tasks, unresolved operations or undelivered outputs prevent shutdown')
+            if sys.platform.startswith('linux'):
+                await execute_management(worker, op)
+                return
             try:
                 process = await asyncio.create_subprocess_exec(*worker.config.shutdown_argv,
                     stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -58,6 +62,9 @@ async def execute_privileged(worker, op):
                 worker._finish(op, error=RemoteError('shutdown_failed', 'Configured shutdown action failed', effect='applied'))
             return
         worker.reservations.add(op.operation_id)
+        if sys.platform.startswith('linux'):
+            await execute_management(worker, op)
+            return
         # Only the trusted sudo process reads askpass output. It never shares
         # authentication stdin with the approved child command, even on cache hits.
         envelope = {'approval': approval_payload(worker, op), 'args': op.args, 'signature': op.approval_signature}
@@ -95,20 +102,28 @@ async def handle_privileged(worker, method, args):
             text(params.get('cwd', ''), 'cwd', empty=True)
             integer(params.get('wait_ms', 300000), 'wait_ms', 0, 300000)
             integer(params.get('timeout_ms') or 0, 'timeout_ms')
-            if not (trusted_executable(worker.config.privilege_helper) and trusted_executable(worker.config.askpass_helper)):
+            if not sys.platform.startswith('linux') and not (trusted_executable(worker.config.privilege_helper) and trusted_executable(worker.config.askpass_helper)):
                 raise RemoteError('privilege_unavailable', 'Install the protected privilege and authentication helpers on this target')
         else:
-            if not worker.config.shutdown_argv or worker.config.shutdown_policy == 'disabled':
+            if worker.config.shutdown_policy == 'disabled' or (not sys.platform.startswith('linux') and not worker.config.shutdown_argv):
                 raise RemoteError('shutdown_unsupported', 'Target does not permit shutdown')
             own_machine = worker.info.get('machine_identity')
             protected = set(worker.config.protected_machine_ids) | {params.get('protected_machine_id')}
             if not own_machine or not params.get('protected_machine_id') or own_machine in protected:
                 raise RemoteError('protected_host', 'Cannot shut down an unidentified machine or the client host')
+        if sys.platform.startswith('linux'):
+            from .management import normalize
+            params['management'] = normalize(params)
+            if params['management']['action'] not in worker.config.management_actions or not trusted_executable(worker.config.management_helper):
+                raise RemoteError('management_unavailable', 'Install the signed management helper and enable this action')
+            installed = await management_status(worker)
+            if not installed.get('ok') or params['management']['action'] not in installed.get('allowed_actions', []):
+                raise RemoteError('management_unavailable', 'Signed management installation is not ready; run the remote setup instructions')
         op, fresh = worker._record(args.get('operation_id'), 'privileged', params)
         if fresh:
             op.state = 'approval_required'
             op.nonce, op.expires_at = secrets.token_hex(32), time.time() + 600
-        return {**op.snapshot(), 'approval': approval_payload(worker, op)}
+        return {**op.snapshot(), 'approval': approval_payload(worker, op), 'normalized_args': params}
     op = worker.operations.get(text(args.get('operation_id'), 'operation_id', limit=128))
     if op is None or op.method != 'privileged':
         raise RemoteError('invalid_operation', 'No privilege preparation for this operation')
@@ -128,6 +143,7 @@ async def handle_privileged(worker, method, args):
     if op.args['action'] == 'sudo' and (len(worker.reservations)+1)*worker.config.output_limit > worker.config.retained_limit:
         raise RemoteError('output_capacity', 'Release retained output before approving execution')
     op.approval_signature = signature
+    op.auth_available = True
     op.state = 'pending'
     # Reserve at admission, not in the asynchronously scheduled executor.
     if op.args['action'] == 'sudo':
@@ -136,15 +152,15 @@ async def handle_privileged(worker, method, args):
     return op.snapshot()
 
 
-def consume_authentication(worker, args):
+def consume_authentication(worker, args, *, management=False):
     # This one unauthenticated RPC is usable only with the already signed grant.
     # It returns permission, never a credential. The protected askpass launcher
     # pins this endpoint in its root-owned configuration.
     grant = args.get('approval', {})
     op = worker.operations.get(grant.get('operation_id'))
-    if op is None or op.method != 'privileged' or op.args['action'] != 'sudo':
+    if op is None or op.method != 'privileged' or (not management and op.args['action'] != 'sudo'):
         raise RemoteError('approval_invalid', 'No approved sudo operation')
-    if (op.state != 'pending' or op.auth_consumed or time.time() > op.expires_at or
+    if (worker.closed or not op.auth_available or op.auth_consumed or time.time() > op.expires_at or
         grant != approval_payload(worker, op)):
         raise RemoteError('approval_invalid', 'Authentication grant is unavailable or consumed')
     try:
@@ -153,4 +169,60 @@ def consume_authentication(worker, args):
     except Exception as exc:
         raise RemoteError('approval_invalid', 'Authentication grant signature rejected') from exc
     op.auth_consumed = True
+    op.auth_available = False
     return {'authorized': True}
+
+
+async def execute_management(worker, op):
+    envelope = {'approval': approval_payload(worker, op), 'args': op.args, 'signature': op.approval_signature}
+    payload = base64.b64encode(canonical(envelope)).decode()
+    # The envelope is public authorization data, not a password. Only the fixed
+    # helper gets NOPASSWD; no model command is interpolated into a root shell.
+    command = 'printf %s ' + shlex.quote(payload) + ' | ' + shlex.join([
+        '/usr/bin/sudo', '-n', '--', worker.config.management_helper])
+    if op.args['action'] == 'shutdown':
+        try:
+            process = await asyncio.create_subprocess_exec('/bin/sh','-c',command,
+                stdin=asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+        except OSError as exc:
+            worker.draining = False
+            raise RemoteError('shutdown_not_started', 'Management launcher could not start') from exc
+        code = await process.wait()
+        if code:
+            worker.draining = False
+            raise RemoteError('shutdown_unconfirmed', 'Management helper did not confirm shutdown; query the original operation', effect='unknown')
+        worker._finish(op, {'status':'accepted','operation_id':op.operation_id,'runtime_epoch':worker.epoch,'power_state':'unconfirmed'})
+        return
+    result = await worker._native('run_limited', worker.config.shell, command, '', False,
+        op.args.get('wait_ms',300000),op.args.get('timeout_ms') or 0,0,worker.config.output_limit)
+    worker.native_owners[result['output_id']] = op.operation_id
+    snapshot = worker._snapshot(result)
+    if result['output_id'] in worker.events:
+        worker.events[result['output_id']]['result']['execution_id'] = op.operation_id
+    worker._finish(op,snapshot)
+
+
+async def management_status(worker, operation=None):
+    import json
+    if not trusted_executable(worker.config.management_helper):
+        return {'ok':False,'reason':'protected_helper_missing'}
+    request = {'mode':'status'} if operation is None else {
+        'mode':'query','runtime_epoch':worker.epoch,'operation_id':operation}
+    try:
+        process = await asyncio.create_subprocess_exec('/usr/bin/sudo','-n','--',worker.config.management_helper,
+            stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+        try:
+            process.stdin.write(base64.b64encode(canonical(request)))
+            await process.stdin.drain(); process.stdin.close()
+            async with asyncio.timeout(5):
+                raw = await process.stdout.read(8193)
+                if len(raw)>8192:
+                    raise ValueError('Invalid helper status size')
+                code = await process.wait()
+            if code: return {'ok':False,'reason':'sudoers_or_helper_unavailable'}
+            return json.loads(raw)
+        finally:
+            if process.returncode is None:
+                process.kill(); await process.wait()
+    except (OSError,ValueError,TimeoutError):
+        return {'ok':False,'reason':'helper_status_unavailable'}

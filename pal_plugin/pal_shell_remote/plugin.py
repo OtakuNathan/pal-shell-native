@@ -16,7 +16,7 @@ from .port import HubPort
 
 class RemotePlugin:
     plugin_id = 'remote'
-    version = '0.2.0'
+    version = '0.3.0'
 
     def __init__(self, runtime_root):
         self.runtime_root = Path(runtime_root)

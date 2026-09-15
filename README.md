@@ -173,7 +173,7 @@ spawn exec-error handshake is not covered by a cancellable startup deadline.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for dependency provenance and licenses.
 
-## Independent remote worker (0.2)
+## Independent remote worker (0.3)
 
 This distribution also provides `pal-shell-worker` and `_pal_shell_rpc`.
 The worker owns the existing Runtime independently of client connections; no tmux
@@ -202,25 +202,51 @@ permission, output delivery and lifecycle contracts. The new remote tests run as
 callers retain their behavior; `run_limited` is an additional bounded-output entry.
 ## Remote sudo setup
 
-Remote users can prepare sudo credentials from their own terminal with
-`pal-shell-worker --config /absolute/worker.toml --setup-sudo`.
-Run as the ordinary worker account. The wizard delegates hidden password entry to
-macOS `security` or Linux `secret-tool`, verifies read access with output discarded,
-and writes password-free helper/configuration templates plus `NEXT_STEPS.txt`.
-Linux requires an unlocked user Secret Service session. Windows is unsupported.
-An administrator still installs the protected worker/helper files; the wizard
-does not elevate, alter the existing worker configuration, or restart services.
-Stored credentials do not prove the sudo policy or approval path: verify a harmless
-approved `id` command after installation. Re-run to explicitly replace a password.
+Run `pal-shell-worker --config /absolute/worker.toml --setup-sudo` in the
+ordinary remote worker user's own terminal. On Linux 0.3 it prepares signed
+management without passwords or Secret Service. Allowed forms are `apt update`
+and `apt install PACKAGE...` (also `apt-get`), approved individually through Pal's
+existing `run_shell(sudo=True)` path. No flags, local packages, repository changes,
+upgrades/removal or arbitrary root commands. Shutdown is separately opt-in and
+still requires approval; cloud/Windows/Mac power must remain disabled.
 
-The prompt-only macOS invocation follows Apple's
-[security tool interface](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/security.c);
-Linux uses secret-tool's [TTY password entry](https://github.com/GNOME/libsecret/blob/main/tool/secret-tool.c).
+The wizard generates a fixed no-argument sudoers helper, root policy, worker
+fragment and `NEXT_STEPS.txt`. It prints the exact remote absolute path and quoted
+`cat` command, including for output directories containing spaces. The default is
+`~/.local/share/pal-shell-sudo-setup/setup-*/`. An administrator reviews/installs the
+complete protected bundle and generated files and runs `visudo -c`. The helper
+independently verifies signed operations and durably reserves each ID before
+execution. Retain its root journal through upgrades; an uncertain operation must
+be queried, never reexecuted by deleting state. NOPASSWD must not be granted to a
+shell, apt directly, or the old arbitrary-command helper.
+
+macOS retains Keychain, protected askpass and its explicit STORE prompt. Windows
+remains unsupported for sudo/power. The wizard neither activates services nor
+claims E2E. Verify approved `apt update` on Linux (approved `id` on Mac) separately.
+
+## Multiplexed transport and upgrades
+
+Install matching 0.3.0 wheel, worker and palpkg: protocol-v2 negotiation rejects an
+old worker before command submission. A 64-bit transport request ID wraps the
+unchanged Dynabridge payload. One caller-owned libuv RPC loop/executor per Hub or
+worker owns accepts, connected I/O and FF request awaits. Python business callbacks
+and the native process Runtime keep their existing owner loops. Slot locking is
+limited to connection lifecycle; slow replies do not block unrelated requests.
+
+Limits are 32 in-flight calls per connection, 1 MiB frames and 8 MiB queued sends.
+Slots asynchronously queue up to 128 more calls in FIFO order for at most 30 seconds;
+queued cancellation/detach never sends a request, and waiting timeout/overflow is
+NOT_STARTED. This does not serialize active RPC round trips.
+Cancellation/timeouts retain the channel and discard late replies without replay.
+Idle authenticated connections no longer expire after 90 seconds. Handshake and
+partial-frame deadlines remain 30 seconds. Runtime epochs and execution IDs remain
+independent of transport IDs. Upgrade during a coordinated window after resolving
+active sessions and retained outputs; building/installing files does not reload Pal.
 
 ## Companion Pal plugin
 
 `pal_plugin/` owns the client-side remote Hub, target Slots and plugin manifest.
-It ships as `plugin-remote-0.2.0.palpkg` alongside the native wheels and independent
+It ships as `plugin-remote-0.3.0.palpkg` alongside the native wheels and independent
 worker bundles. The worker needs no Pal installation; the client plugin runs in
 Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
 
@@ -231,7 +257,7 @@ pal package build pal_plugin --output dist
 ```
 
 Install the matching native wheel into Pal's interpreter first, then use
-`pal package install dist/plugin-remote-0.2.0.palpkg --runtime-root <runtime-root>`
+`pal package install dist/plugin-remote-0.3.0.palpkg --runtime-root <runtime-root>`
 for offline preparation, or the running host's authorized package installation
 flow. Verification checks the native Runtime, RPC client and resident Pal contract;
 it does not install dependencies or restart services. The plugin uses the existing

@@ -5,7 +5,8 @@ from pal.execution.native_shell.remote_contract import RemoteFailure
 
 class HubPort:
     def __init__(self, endpoint):
-        self.client = SidecarRpcClient(endpoint, request_timeout_seconds=315, unix_only=True) if endpoint else None
+        # Include bounded queueing, SSH/handshake and the maximum RPC wait.
+        self.client = SidecarRpcClient(endpoint, request_timeout_seconds=375, unix_only=True) if endpoint else None
         self.closed = False
 
     async def call(self, method, params):

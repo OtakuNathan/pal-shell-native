@@ -12,7 +12,7 @@ from .worker import Worker, WorkerConfig
 def load_config(path):
     with Path(path).open('rb') as f:
         data = tomllib.load(f)
-    for key in ('shutdown_argv', 'protected_machine_ids', 'approvers'):
+    for key in ('shutdown_argv', 'protected_machine_ids', 'approvers', 'management_actions'):
         if key in data:
             data[key] = tuple(data[key])
     data['socket_path'] = Path(data['socket_path']).expanduser()
@@ -36,12 +36,22 @@ async def serve(config):
 def main():
     parser = argparse.ArgumentParser(prog='pal-shell-worker')
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--management-helper', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--askpass-config', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--generate-client-key', type=Path, help='Create a private client signing key and print only its public key')
     parser.add_argument('--write-service', type=Path, help='Write a user-service definition to this directory; never activate it')
     parser.add_argument('--executable', type=Path, help='Installed pal-shell-worker executable for the service definition')
-    parser.add_argument('--setup-sudo', action='store_true', help='Interactively enroll remote sudo credentials and prepare protected helper configuration')
+    parser.add_argument('--setup-sudo', action='store_true', help='Prepare Linux signed management or enroll Mac Keychain credentials; no activation')
     args, extra = parser.parse_known_args()
+    if args.management_helper:
+        import sys
+        if not sys.platform.startswith('linux'):
+            parser.error('Signed sudoers management is Linux-only')
+        if len(sys.argv) != 2:
+            parser.error('Management entry accepts no additional arguments')
+        from .management_helper import main as manage
+        sys.argv = [sys.argv[0]]
+        raise SystemExit(manage())
     if args.askpass_config:
         import sys
         from .askpass import main as askpass_main

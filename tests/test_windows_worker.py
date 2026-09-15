@@ -18,7 +18,7 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        key = Ed25519PrivateKey.generate()
+        key = self.key = Ed25519PrivateKey.generate()
         shell = str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe')
         self.worker = await Worker(WorkerConfig('test', 'client', key.public_key().public_bytes_raw().hex(),
             self.root/'endpoint.json', shell=shell, tcp_port=0, output_limit=4096,
@@ -27,6 +27,41 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.worker.close()
         self.directory.cleanup()
+
+    async def test_authenticated_multiplexed_tcp_transport(self):
+        import socket
+        import _pal_shell_rpc as wire
+        from pal_shell_worker.transport import Channel, Executor
+        from pal_shell_worker.protocol import encode, decode, auth_message
+        executor = Executor()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setblocking(False)
+        await asyncio.get_running_loop().sock_connect(sock, self.worker.server.sockets[0].getsockname())
+        channel = Channel(executor, sock)
+        def send(identifier, method, params):
+            channel.send(identifier, wire.pack(encode({'method': method, 'params': params})))
+        async def receive():
+            identifier, frame = await asyncio.wait_for(channel.receive(), 5)
+            reply = decode(wire.response_payload(frame))
+            self.assertTrue(reply['ok'], reply)
+            return identifier, reply['result']
+        try:
+            send(0, 'hello', {})
+            _, hello = await receive()
+            self.assertEqual(hello['protocol_version'], 2)
+            signature = self.key.sign(auth_message(hello['nonce'], 'test', hello['runtime_epoch'], 'client')).hex()
+            send(0, 'authenticate', {'client_id': 'client', 'signature': signature})
+            await receive()
+            args = {'runtime_epoch': hello['runtime_epoch']}
+            send(1, 'events', {**args, 'after': 0, 'wait_ms': 1000})
+            send(2, 'metadata', args)
+            identifier, info = await receive()
+            self.assertEqual(identifier, 2)
+            self.assertEqual(info['shell']['family'], 'powershell')
+            self.assertEqual((await receive())[0], 1)
+        finally:
+            await channel.close()
+            await executor.close()
 
     async def read_session(self, sid, wait_ms=1000):
         oid = uuid4().hex

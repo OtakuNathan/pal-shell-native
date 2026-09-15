@@ -16,13 +16,18 @@ from .slot import RemoteSlot, Target
 
 class RemoteHub:
     def __init__(self, targets):
+        from pal_shell_worker.transport import Executor
+        targets = list(targets)
         self.slots = {}
+        if len({t.target for t in targets}) != len(targets):
+            raise ValueError('Duplicate remote target')
         if sum(t.shortcut == 'desktop' for t in targets) > 1:
             raise ValueError('Only one target may bind the desktop shortcut')
+        self.executor = Executor() if targets else None
         for config in targets:
             if config.target in self.slots:
                 raise ValueError('Duplicate remote target')
-            self.slots[config.target] = RemoteSlot(config)
+            self.slots[config.target] = RemoteSlot(config, self.executor)
 
     async def call(self, method, params):
         try:
@@ -64,6 +69,8 @@ class RemoteHub:
 
     async def close(self):
         await asyncio.gather(*(slot.close() for slot in self.slots.values()))
+        if self.executor:
+            await self.executor.close()
 
 
 async def serve(config, directory):

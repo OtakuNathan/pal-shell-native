@@ -1,19 +1,40 @@
-0.2.0 adds an independent user worker and authenticated remote shell RPC.
+0.3.0 adds multiplexed protocol-v2 transport and Linux signed management.
 
-- Reuse Dynabridge RPC and FF/libuv, with a separate shell projection.
-- Keep Runtime/session/PTY ownership independent of SSH and client connections.
-- Add execution deduplication, Runtime fencing, bounded output snapshots and metadata.
-- Add signed single-use privileged-operation grants, remote-only askpass and a
-  non-setuid root monitor, with physical-target acceptance still required.
-- Generate Linux user-service / Mac LaunchAgent definitions without activation.
-- Build standalone worker archives and Mac Intel wheels alongside existing platforms.
-- Ship the Pal-side remote Hub/Slot plugin as a companion palpkg using Pal's
-  existing package installation and lifecycle, with native prerequisite checks.
-- Preserve existing local Runtime API and add optional hard output bounds.
-- Add an experimental Windows PowerShell process adapter using the same Runtime,
-  with Job Object cancellation and SSH-forwarded loopback RPC. No ConPTY or power
-  management; Windows publication remains outside the release matrix.
+- Reuse the existing Dynabridge framing and FF uv_executor without changing either library.
+- Share one persistent native RPC loop per Hub/worker, route out-of-order replies by
+  request ID, and bound in-flight requests/frames/send queues.
+- Keep other requests alive on cancellation/timeouts; remove the authenticated
+  90-second idle disconnect. Never replay uncertain execution or PTY input.
+- Classify privileged failures before commit as NOT_STARTED without retaining a
+  write lock; preserve reconciliation tickets after an uncertain commit.
+- Limit Linux sudo=True to approved apt update/install forms. A protected fixed
+  sudoers helper verifies normalized signed actions and durably prevents replay.
+- Pass literal package selectors to apt-get, preventing regex expansion or suffix
+  operations. Preserve helper grants across asynchronous initial session snapshots,
+  and revoke unused grants when the process exits.
+- Queue excess Slot requests asynchronously with bounded FIFO admission, cancellation
+  and NOT_STARTED expiry; never expose lease-capacity failures as uncertain execution.
+- Generate administrator-reviewed Linux management templates without passwords;
+  print the exact remote NEXT_STEPS path. Keep Mac Keychain behavior and Windows
+  ordinary PowerShell execution; no Windows power or privilege management.
+- Extend transport, lifecycle, management and installer acceptance, including
+  Windows TCP multiplexing and an opt-in 95-second idle regression.
 
-This package does not enable remote in Pal, alter user configuration, install
-privileged helpers as root, activate a service, or restart anything. Use matching
-Pal integration and follow `docs/remote-shell.md` in that repository.
+Requires matching 0.3.0 native wheel, remote palpkg and worker (protocol 2).
+Coordinate active sessions/output before upgrading. No installer automatically
+changes sudoers, restarts a worker/Pal or performs physical power actions.
+
+Upgrade requirements:
+- Update Pal to 3dbad0545c7b3892ed1afe896e57892c9693c637 or later.
+- Install the wheel matching the Pal host's OS, architecture and Python 3.11/3.12/3.13,
+  then install plugin-remote-0.3.0.palpkg in the same runtime.
+- Ubuntu AMD64: use pal-shell-worker-ubuntu-latest.tar.gz (built on Ubuntu 24.04).
+  Ubuntu ARM64: use pal-shell-worker-ubuntu-24.04-arm.tar.gz.
+  Mac ARM64: use pal-shell-worker-macos-latest.tar.gz; Intel: macos-15-intel.
+- Preserve worker identity/configuration and root operation journals. Reconcile
+  UNKNOWN operations and deliver retained output before coordinated service updates.
+- Linux sudo requires the new --setup-sudo templates and administrator installation
+  of the protected management helper/sudoers; replacing the binary alone is insufficient.
+  Normal execution does not require sudo setup. Existing SSH keys/targets can remain.
+- Windows remains experimental, with separate CI artifacts; it is not included in
+  these POSIX release bundles and has no power or privilege management.

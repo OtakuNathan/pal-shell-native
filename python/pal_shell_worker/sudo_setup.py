@@ -75,6 +75,9 @@ password into Pal, an ordinary shell command, or a remote shell PTY transcript.
 
 
 def main(config):
+    if sys.platform.startswith("linux"):
+        from .management_setup import main as management_setup
+        return management_setup(config)
     if not (sys.platform == 'darwin' or sys.platform.startswith('linux')):
         print('Remote sudo setup is unsupported on this platform.', file=sys.stderr)
         return 1
@@ -97,6 +100,7 @@ def main(config):
     print(f'Remote sudo setup: worker={config.worker_id}, OS account={account}, store={store}')
     print('Run in your own terminal, not a Pal-managed shell. The OS tool will ask for the password without echo.')
     print('This authorizes storing/replacing the credential, not running sudo commands or changing power policy.')
+    instructions = None
     try:
         executable = absolute_path('Protected worker executable', '/usr/local/libexec/pal-shell-worker/pal-shell-worker')
         helper = absolute_path('Protected privilege helper', config.privilege_helper or '/usr/local/libexec/pal-shell-privileged')
@@ -107,10 +111,11 @@ def main(config):
         directory = Path(tempfile.mkdtemp(prefix='setup-', dir=output))
         write_plan(directory, config, account=account, store=store, service=service,
                    executable=executable, helper=helper, launcher=launcher, auth_path=auth_path)
+        instructions = directory / 'NEXT_STEPS.txt'
         print(f'Configuration templates: {directory}')
         print(f'Credential reference: service={service}, account={account}')
         if input('Type STORE to store/replace the remote sudo password, or Enter to leave templates only: ').strip() != 'STORE':
-            print('Templates prepared; credential unchanged. Follow NEXT_STEPS.txt to complete setup.')
+            print('Templates prepared; credential unchanged. Sudo setup is not complete.')
             return 0
         # stdin/stderr stay on the user's terminal. Passwords never enter Python,
         # argv, environment variables, captured output, or generated files.
@@ -123,7 +128,7 @@ def main(config):
         if result.returncode:
             print('Credential stored, but read access is unavailable. Check store permissions/unlock before activation.', file=sys.stderr)
             return 1
-        print('Credential stored and readable by this account. Sudo is not yet verified; follow NEXT_STEPS.txt.')
+        print('Credential stored and readable by this account. Sudo is not yet verified.')
         return 0
     except (OSError, ValueError, subprocess.TimeoutExpired, EOFError):
         print('Setup did not complete. Check paths, terminal and credential store; existing worker config is unchanged.', file=sys.stderr)
@@ -131,3 +136,9 @@ def main(config):
     except KeyboardInterrupt:
         print('\nSetup interrupted; check enrollment status before retrying.', file=sys.stderr)
         return 130
+    finally:
+        if instructions is not None:
+            print(f'\nNext step — open these instructions on THIS remote machine:\n  {instructions}')
+            print(f'Copy and run:\n  cat {shlex.quote(str(instructions))}')
+            print('Follow the helper installation and worker configuration steps, then verify an approved sudo id through Pal.')
+            print('These instructions contain no password. Do not send your password to Pal.')
