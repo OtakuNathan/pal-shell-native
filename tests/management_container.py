@@ -19,7 +19,10 @@ async def main():
     assert os.geteuid() == 0
     user = pwd.getpwnam('paltest')
     key = Ed25519PrivateKey.generate()
-    sock = Path('/home/paltest/worker.sock')
+    runtime_dir = Path('/home/paltest/.pal-shell-run')
+    runtime_dir.mkdir(mode=0o700)
+    os.chown(runtime_dir, user.pw_uid, user.pw_gid)
+    sock = runtime_dir / 'worker.sock'
     helper = Path('/usr/local/libexec/pal-shell-manage')
     helper.parent.mkdir(exist_ok=True)
     # Make helper startup slower than an async run snapshot, deterministically.
