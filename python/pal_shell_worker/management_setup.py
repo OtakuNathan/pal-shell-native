@@ -20,6 +20,7 @@ def main(config):
     instructions = None
     try:
         print('Linux signed management: no sudo password or keyring is used. Each action requires Pal approval.')
+        print('To change an existing installation, rerun this wizard and install the new policy, then merge worker-sudo.toml.')
         target = int(input('Pal target number [1]: ').strip() or '1')
         if target<=0: raise ValueError('Target must be positive')
         shutdown = input('Allow approved shutdown on this machine? Type YES to enable [disabled]: ').strip()=='YES'
@@ -107,6 +108,11 @@ Manual equivalent (optional):
 4. Use run_shell(target={target}, sudo=True, cmd="apt update") and approve once.
    Installation, helper protection and an actual approved execution are separate checks.
    Allowed actions: {', '.join(actions)}. Ordinary commands remain unprivileged.
+   Shutdown policy: {'approval' if shutdown else 'disabled'}. To change it later, rerun --setup-sudo;
+   update BOTH the administrator policy and worker-sudo.toml, then coordinate worker restart.
+   Verify list_remote reports management.shutdown.supported={'true' if shutdown else 'false'}.
+   remote_power(target={target}, action="shutdown") requests a real shutdown after approval;
+   do not use it as an installation probe.
 5. Rollback: remove only /etc/sudoers.d/pal-shell-management, run sudo visudo -c,
    and restore the previous worker configuration/version after coordinating tasks.
    Retain the root operation journal for reconciliation; never delete it to replay an operation.

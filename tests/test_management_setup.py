@@ -14,6 +14,27 @@ from pal_shell_worker import management_setup
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux setup')
 class SetupTests(unittest.TestCase):
+    def test_shutdown_opt_in_updates_both_policies_without_activating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)/'bundle'
+            (bundle/'_internal').mkdir(parents=True)
+            (bundle/'pal-shell-worker').write_text('fixture')
+            config = SimpleNamespace(worker_id='desktop', client_id='pal', client_public_key='a'*64,
+                                     socket_path=Path('/home/test/worker.sock'), protected_machine_ids=())
+            with patch('os.getuid', return_value=1000), patch('os.geteuid', return_value=1000), \
+                 patch('pwd.getpwuid', return_value=SimpleNamespace(pw_name='test')), \
+                 patch('sys.stdin.isatty', return_value=True), patch('sys.stdout', io.StringIO()), \
+                 patch('builtins.input', side_effect=['1', 'YES', str(bundle), '', directory]):
+                self.assertEqual(management_setup.main(config), 0)
+            path = next(Path(directory).glob('setup-*/NEXT_STEPS.txt'))
+            policy = tomllib.loads((path.parent/'management.toml').read_text())
+            worker = tomllib.loads((path.parent/'worker-sudo.toml').read_text())
+            self.assertEqual(policy['allowed_actions'], ['apt_update', 'apt_install', 'shutdown'])
+            self.assertEqual(worker['management_actions'], policy['allowed_actions'])
+            self.assertEqual(worker['shutdown_policy'], 'approval')
+            self.assertIn('do not use it as an installation probe', path.read_text())
+            self.assertIn('No service or installed configuration was changed', path.read_text())
+
     def test_no_password_default_no_power_and_exact_instructions(self):
         with tempfile.TemporaryDirectory(prefix='setup space ') as directory:
             config = SimpleNamespace(worker_id='desktop', client_id='pal', client_public_key='a'*64,
