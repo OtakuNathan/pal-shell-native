@@ -97,9 +97,13 @@ jobs:
         run: |
           python tests/test_management.py
           python tests/test_management_setup.py
+          python tests/test_management_installer.py
       - run: python packaging/build_worker.py
       - run: dist/pal-shell-worker/pal-shell-worker --help
       - run: python tests/test_worker_bundle.py dist/pal-shell-worker/pal-shell-worker
+      - name: Frozen Linux administrator installer handoff
+        if: runner.os == 'Linux'
+        run: python tests/test_management_bundle.py dist/pal-shell-worker/pal-shell-worker
       - run: tar -czf dist/pal-shell-worker-${{ matrix.os }}.tar.gz -C dist pal-shell-worker
       - uses: actions/upload-artifact@v4
         with:

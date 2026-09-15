@@ -5,6 +5,9 @@ from pathlib import Path
 import shlex
 import sys
 import tempfile
+import hashlib
+import importlib.resources
+import shutil
 
 
 def main(config):
@@ -20,9 +23,25 @@ def main(config):
         target = int(input('Pal target number [1]: ').strip() or '1')
         if target<=0: raise ValueError('Target must be positive')
         shutdown = input('Allow approved shutdown on this machine? Type YES to enable [disabled]: ').strip()=='YES'
-        executable = Path(input('Protected worker executable [/usr/local/libexec/pal-shell-worker/pal-shell-worker]: ').strip() or '/usr/local/libexec/pal-shell-worker/pal-shell-worker')
+        default_bundle = str(Path(sys.executable).parent) if getattr(sys, 'frozen', False) else ''
+        bundle_text = input(f'Complete extracted worker bundle directory [{default_bundle or "required; contains pal-shell-worker and _internal"}]: ').strip() or default_bundle
+        bundle = Path(bundle_text).expanduser().resolve()
+        if not bundle_text or not (bundle/'pal-shell-worker').is_file() or not (bundle/'_internal').is_dir():
+            raise ValueError('A complete standalone worker bundle is required, not a virtualenv')
+        template = importlib.resources.files('pal_shell_worker').joinpath('resources/install_root.py.txt').read_text()
+        # The same stdlib implementation checks both prepared and installed trees.
+        installer = {'__name__':'prepared_installer'}
+        exec(compile(template, 'install-root.py', 'exec'), installer)
+        inventory = installer['inventory'](bundle)
+        bundle_id = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()[:16]
+        default_executable = f'/usr/local/libexec/pal-shell-worker-{bundle_id}/pal-shell-worker'
+        executable = Path(input(f'Protected worker executable [{default_executable}]: ').strip() or default_executable)
         if not executable.is_absolute() or any(c in str(executable) for c in '\n\r\0'): raise ValueError('Absolute executable required')
+        if executable.name != 'pal-shell-worker' or executable.parent.parent != Path('/usr/local/libexec') or not executable.parent.name.startswith('pal-shell-worker-'):
+            raise ValueError('Choose /usr/local/libexec/pal-shell-worker-VERSION/pal-shell-worker')
         output = Path(input('Setup output directory [~/.local/share/pal-shell-sudo-setup]: ').strip() or '~/.local/share/pal-shell-sudo-setup').expanduser().resolve()
+        if output.is_relative_to(bundle):
+            raise ValueError('Setup output must be outside the worker bundle')
         output.mkdir(parents=True,exist_ok=True,mode=0o700)
         directory = Path(tempfile.mkdtemp(prefix='setup-',dir=output))
         import pwd
@@ -41,10 +60,34 @@ def main(config):
             account+' ALL=(root) NOPASSWD: /usr/local/libexec/pal-shell-manage ""\n')
         (directory/'worker-sudo.toml').write_text(toml({'management_helper':'/usr/local/libexec/pal-shell-manage',
             'management_actions':actions,'shutdown_policy':'approval' if shutdown else 'disabled'}))
+        shutil.copytree(bundle, directory/'bundle', symlinks=True)
+        if installer['inventory'](directory/'bundle') != inventory:
+            raise ValueError('Worker bundle changed during preparation')
+        (directory/'install-root.py').write_text(template)
+        manifest = {'destination':str(executable.parent), 'bundle':inventory,
+                    'files':{name:installer['file_hash'](directory/name) for name in
+                             ('management.toml','pal-shell-manage','pal-shell-management.sudoers')}}
+        (directory/'INSTALL_MANIFEST.json').write_text(json.dumps(manifest, sort_keys=True, indent=2)+'\n')
         instructions = directory/'NEXT_STEPS.txt'
         q=shlex.quote
         instructions.write_text(f'''Signed management for worker {config.worker_id}, target {target}, account {account}.
 No password was requested or saved. No service or installed configuration was changed.
+
+Recommended administrator installation, after reviewing install-root.py,
+INSTALL_MANIFEST.json and the policy/sudoers files:
+  sudo /usr/bin/python3 -I {q(str(directory/'install-root.py'))}
+
+The prepared directory includes the complete worker bundle. The manifest detects
+changes since preparation; it is not a publisher signature. Use trusted release
+assets. The installer copies and verifies files in a root-owned staging directory,
+runs visudo -cf and visudo -c, and backs up replaced configuration. It restores
+configuration if publication/validation fails. Identical bundles can be reused;
+a different existing bundle requires a new versioned destination. Pending root
+operations must be reconciled first. Root journals are never deleted.
+No apt command, password storage, worker configuration change or service restart
+is performed by the installer. After it succeeds, continue at step 3 below.
+
+Manual equivalent (optional):
 
 1. Install the COMPLETE matching worker 0.3.0 bundle at {executable}.
    Its program, dependencies and parent paths must be root-owned and not writable
@@ -71,12 +114,12 @@ Existing keyring credentials are untouched. Linux management no longer uses them
 ''')
         print('Management templates prepared; administrator installation is still required.')
         return 0
-    except (ValueError,OSError,EOFError):
-        print('Setup did not complete; installed configuration is unchanged.',file=sys.stderr)
+    except (ValueError,OSError,EOFError) as error:
+        print(f'Setup did not complete; installed configuration is unchanged: {error}',file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('Setup cancelled; installed configuration is unchanged.',file=sys.stderr)
         return 130
     finally:
         if instructions:
-            print(f'Next step on THIS remote machine: {instructions}\nCopy and run:\n  cat {shlex.quote(str(instructions))}')
+            print(f'Next step on THIS remote machine: {instructions}\nReview:\n  cat {shlex.quote(str(instructions))}\nInstall from your own terminal:\n  sudo /usr/bin/python3 -I {shlex.quote(str(instructions.parent/"install-root.py"))}')

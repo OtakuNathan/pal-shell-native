@@ -1,0 +1,164 @@
+"""Administrator-reviewed installer; stdlib only, compatible with Python 3.10+."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import tempfile
+
+
+def inventory(root):
+    result = {}
+    for path in root.rglob('*'):
+        name = str(path.relative_to(root))
+        if path.is_symlink():
+            target = path.readlink()
+            if target.is_absolute() or not path.resolve().is_relative_to(root.resolve()):
+                raise ValueError('Bundle symlink escapes installation: ' + name)
+            if not path.exists():
+                raise ValueError('Broken bundle symlink: ' + name)
+            result[name] = {'link': str(target)}
+        elif path.is_file():
+            result[name] = {'sha256': file_hash(path)}
+        elif not path.is_dir():
+            raise ValueError('Unsupported bundle entry: ' + name)
+    return result
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def protected(path):
+    for item in (path, *path.parents):
+        info = item.lstat()
+        if item.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('Unprotected destination: ' + str(item))
+
+
+def check_pending(state):
+    for path in state.glob('*.json'):
+        protected(path)
+        if json.loads(path.read_text()).get('state') == 'pending':
+            raise ValueError('Reconcile pending management operation before installation: ' + path.name)
+
+
+def stage_bundle(setup, staged, manifest, names):
+    bundle = staged / 'bundle'
+    shutil.copytree(setup / 'bundle', bundle, symlinks=True)
+    if inventory(bundle) != manifest['bundle']:
+        raise ValueError('Prepared bundle changed; regenerate and review installation')
+    for name in names:
+        shutil.copyfile(setup / name, staged / name)
+        if file_hash(staged / name) != manifest['files'][name]:
+            raise ValueError('Prepared configuration changed: ' + name)
+    return bundle
+
+
+def publish(staged, destinations, backup, validate):
+    """Rollback configuration if publication/visudo fails; never touch journals."""
+    changed = []
+    try:
+        for name, (target, mode) in destinations.items():
+            previous = backup / name
+            if target.exists() or target.is_symlink():
+                protected(target)
+                shutil.copy2(target, previous)
+            fd, filename = tempfile.mkstemp(prefix='.pal-install-', dir=target.parent)
+            temporary = Path(filename)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write((staged / name).read_bytes())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.chmod(mode)
+                os.replace(temporary, target)
+                changed.append((target, previous))
+            finally:
+                temporary.unlink(missing_ok=True)
+        validate()
+    except BaseException:
+        for target, previous in reversed(changed):
+            if previous.exists():
+                shutil.copy2(previous, target)
+            else:
+                target.unlink(missing_ok=True)
+        raise
+
+
+def install(setup):
+    if os.geteuid() != 0:
+        raise ValueError('Run the printed sudo command in your own terminal; no password is stored.')
+    if not os.sys.flags.isolated:
+        raise ValueError('Use /usr/bin/python3 -I to isolate the administrator interpreter.')
+    manifest = json.loads((setup / 'INSTALL_MANIFEST.json').read_text())
+    destination = Path(manifest['destination'])
+    if (not destination.is_absolute() or destination.parent != Path('/usr/local/libexec')
+            or not destination.name.startswith('pal-shell-worker-')):
+        raise ValueError('Use a versioned /usr/local/libexec/pal-shell-worker-* destination')
+    paths = {
+        'management.toml': (Path('/usr/local/etc/pal-shell-management.toml'), 0o644),
+        'pal-shell-manage': (Path('/usr/local/libexec/pal-shell-manage'), 0o755),
+        'pal-shell-management.sudoers': (Path('/etc/sudoers.d/pal-shell-management'), 0o440),
+    }
+    for path in (destination.parent, Path('/usr/local/etc'), Path('/etc/sudoers.d')):
+        # Validate existing ancestors before creating any missing directory.
+        ancestor = path
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        protected(ancestor)
+        path.mkdir(mode=0o755, parents=True, exist_ok=True)
+        protected(path)
+    state = Path('/var/lib/pal-shell-management')
+    protected(state.parent)
+    state.mkdir(mode=0o700, exist_ok=True)
+    protected(state)
+    import fcntl
+    lock = os.open(state / '.install.lock', os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600)
+    with os.fdopen(lock, 'w') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        check_pending(state)
+        with tempfile.TemporaryDirectory(prefix='.pal-install-', dir=destination.parent) as temporary:
+            staged = Path(temporary)
+            bundle = stage_bundle(setup, staged, manifest, paths)
+            for path in (bundle, *bundle.rglob('*')):
+                os.chown(path, 0, 0, follow_symlinks=False)
+                if not path.is_symlink():
+                    # Never turn source mode bits into root setuid/setgid files.
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) & 0o755)
+            subprocess.run(['/usr/sbin/visudo', '-cf', str(staged / 'pal-shell-management.sudoers')], check=True)
+            # Run only the administrator-reviewed copy, never the source venv.
+            subprocess.run([str(bundle / 'pal-shell-worker'), '--help'], check=True, stdout=subprocess.DEVNULL)
+            if destination.exists() or destination.is_symlink():
+                protected(destination)
+                for path in destination.rglob('*'):
+                    if not path.is_symlink():
+                        protected(path)
+                        if path.stat().st_mode & 0o6000:
+                            raise ValueError('Existing bundle has setuid/setgid mode bits')
+                if inventory(destination) != manifest['bundle']:
+                    raise ValueError('Existing bundle differs; choose a new versioned destination')
+            else:
+                os.rename(bundle, destination)
+            backup_root = state / 'install-backups'
+            backup_root.mkdir(mode=0o700, exist_ok=True)
+            protected(backup_root)
+            backup = Path(tempfile.mkdtemp(prefix='install-', dir=backup_root))
+            publish(staged, paths, backup,
+                    lambda: subprocess.run(['/usr/sbin/visudo', '-c'], check=True))
+            print('Installed. Previous configuration:', backup)
+    print('No apt command, service restart, password storage or worker config change was performed.')
+    print('Next: coordinate active sessions/output, merge worker-sudo.toml, restart the user worker, then verify an approved apt update in Pal.')
+
+
+if __name__ == '__main__':
+    try:
+        install(Path(__file__).resolve().parent)
+    except Exception as error:
+        raise SystemExit('Installation failed: ' + str(error))

@@ -213,8 +213,33 @@ still requires approval; cloud/Windows/Mac power must remain disabled.
 The wizard generates a fixed no-argument sudoers helper, root policy, worker
 fragment and `NEXT_STEPS.txt`. It prints the exact remote absolute path and quoted
 `cat` command, including for output directories containing spaces. The default is
-`~/.local/share/pal-shell-sudo-setup/setup-*/`. An administrator reviews/installs the
-complete protected bundle and generated files and runs `visudo -c`. The helper
+`~/.local/share/pal-shell-sudo-setup/setup-*/`. Linux setup also copies a complete
+extracted standalone worker bundle into that directory and generates
+`install-root.py` plus `INSTALL_MANIFEST.json`. When running from a wheel/venv,
+provide the extracted bundle path; when running the standalone worker, its own
+bundle is the default. A venv is not a protected standalone bundle.
+
+After reviewing the generated script, policy and sudoers, run the exact printed
+command in your own terminal:
+
+```sh
+sudo /usr/bin/python3 -I /absolute/setup-directory/install-root.py
+```
+
+This requires system Python 3.10+ and asks only for the system's one-time sudo
+authentication. The installer verifies a root-owned staged copy, strips writable
+and setuid/setgid modes, checks `visudo -cf` and `visudo -c`, and backs up replaced
+configuration. A failed configuration publication is rolled back. It reuses an
+identical installed bundle; different content requires a new destination. The
+default destination is versioned by bundle content, keeping the old bundle intact.
+Pending root journal records block installation and are never deleted. Coordinate
+remote submissions before installing; configuration installation is not a drain
+or authorization to interrupt tasks. The manifest detects changes since setup,
+not publisher authenticity: start with trusted release assets.
+
+Installation does not run apt, store passwords, merge the worker configuration or
+restart services. Follow `NEXT_STEPS.txt` to activate the worker configuration and
+verify one approved operation separately. The helper
 independently verifies signed operations and durably reserves each ID before
 execution. Retain its root journal through upgrades; an uncertain operation must
 be queried, never reexecuted by deleting state. NOPASSWD must not be granted to a

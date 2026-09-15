@@ -42,6 +42,30 @@ async def main():
     config = Path('/home/paltest/worker.toml')
     config.write_text(toml({**common,'socket_path':str(sock),'management_helper':str(helper),
                             'management_actions':['apt_update','apt_install'],'shutdown_policy':'disabled'}))
+    # Exercise the generated installer with a complete test bundle. Its executable
+    # delegates to the container's root-owned Python installation; no host files
+    # or credentials are used. The real bundled binary is covered by bundle CI.
+    bundle = Path('/home/paltest/fixture-bundle')
+    (bundle/'_internal').mkdir(parents=True)
+    (bundle/'pal-shell-worker').write_text('#!/bin/sh\n/bin/sleep .1\nexec /usr/local/bin/python -m pal_shell_worker "$@"\n')
+    (bundle/'pal-shell-worker').chmod(0o755)
+    prepare = '''
+from pathlib import Path
+from unittest.mock import patch
+from pal_shell_worker.__main__ import load_config
+from pal_shell_worker.management_setup import main
+answers = ['1', '', '/home/paltest/fixture-bundle',
+           '/usr/local/libexec/pal-shell-worker-fixture/pal-shell-worker', '/home/paltest/setup']
+with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_effect=answers):
+    assert main(load_config('/home/paltest/worker.toml')) == 0
+'''
+    subprocess.run(['/usr/sbin/runuser','-u','paltest','--',sys.executable,'-c',prepare],check=True)
+    setup = next(Path('/home/paltest/setup').glob('setup-*'))
+    for _ in range(2):
+        subprocess.run([sys.executable,'-I',str(setup/'install-root.py')],check=True)
+    assert config.read_text() == toml({**common,'socket_path':str(sock),'management_helper':str(helper),
+                                     'management_actions':['apt_update','apt_install'],'shutdown_policy':'disabled'})
+    assert len(list((state/'install-backups').iterdir())) == 2
     # No repository network access or package mutation is needed for acceptance:
     # update an empty source set, then install the already-installed bash package.
     for path in Path('/etc/apt/sources.list.d').glob('*'): path.unlink()

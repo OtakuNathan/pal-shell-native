@@ -1,5 +1,9 @@
 0.3.0 adds multiplexed protocol-v2 transport and Linux signed management.
 
+- Linux setup now prepares a complete reviewed bundle, integrity manifest and a
+  one-command administrator installer. It preserves journals/configuration backups,
+  restores configuration on failed publication and keeps service activation separate.
+
 - Reuse the existing Dynabridge framing and FF uv_executor without changing either library.
 - Share one persistent native RPC loop per Hub/worker, route out-of-order replies by
   request ID, and bound in-flight requests/frames/send queues.
