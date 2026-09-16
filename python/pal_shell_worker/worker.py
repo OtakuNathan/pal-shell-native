@@ -383,6 +383,7 @@ class Worker:
                     self.management_probe = await management_status(self)
             active = sum(item['event']['status'] not in TERMINAL for item in self.outputs.values())
             return {**self.info, 'worker_id': self.config.worker_id, 'runtime_epoch': self.epoch,
+                    'observation_methods': ['observe'],
                     'protocol_version': PROTOCOL_VERSION, 'active_tasks': active, 'draining': self.draining,
                     'retained_outputs': len(self.outputs), 'reserved_bytes': len(self.reservations) * self.config.output_limit,
                     'limits': {'output_bytes': self.config.output_limit, 'retained_bytes': self.config.retained_limit,
@@ -393,6 +394,15 @@ class Worker:
                                'supported': trusted_executable(self.config.management_helper) if sys.platform.startswith('linux') else trusted_executable(self.config.privilege_helper) and trusted_executable(self.config.askpass_helper),
                                'credential_state': 'not_required' if sys.platform.startswith('linux') else 'remote_only_not_probed', 'approval_required': True}, 'power': {'shutdown': bool('shutdown' in self.config.management_actions and trusted_executable(self.config.management_helper)) if sys.platform.startswith('linux') else bool(self.config.shutdown_argv),
                                'policy': self.config.shutdown_policy}}
+        if method == 'observe':
+            if set(args) != {'session_id'}:
+                raise RemoteError('invalid_request', 'observe accepts only session_id')
+            sid = integer(args.get('session_id'), 'session_id', 1, 2**63 - 1)
+            if sid not in self.native_outputs:
+                raise RemoteError('invalid_session', 'Session is unknown or released')
+            # Observation never enters the side-effect operation journal. A lost
+            # reply can be read again without creating or replaying an operation.
+            return self._snapshot(await self._native('read', sid, 0))
         if method == 'query':
             op = self.operations.get(text(args.get('operation_id'), 'operation_id', limit=128))
             if not op:

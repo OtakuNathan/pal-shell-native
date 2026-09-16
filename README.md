@@ -1,20 +1,20 @@
 # pal-shell-native
 
-Optional **in-process extension backend** for [Pal](https://github.com/OtakuNathan/Pal).
-It runs POSIX shell processes using Flux Foundry, dynabridge and statically linked
-libuv. Install it into the Python environment used by Pal, then select
-`PAL_SHELL_BACKEND=native`. Ordinary Pal installations keep the Python backend.
+Optional shell plugin for [Pal](https://github.com/OtakuNathan/Pal). Its `.palpkg`
+owns the `run_shell` schema and guidance, session controls, remote routing,
+observations, approvals and Bunshin integration. Its CPython wheel runs POSIX
+processes through Flux Foundry, dynabridge and statically linked libuv.
 
-This is a CPython wheel, **not a `.palpkg` sidecar plugin**. It does not replace
-Pal, its tool schemas, result pager, approval policy or Bunshin lifecycle. Those
-host integrations stay in Pal. Installation never edits Pal or restarts a service.
-Pal can read the procedure below and perform the integration on its user's behalf.
+Install the wheel in Pal's interpreter and attach the matching plugin package.
+Attaching replaces Pal's built-in shell through the generic execution extension
+port. Detaching restores the built-in shell after outstanding work is settled.
+Installing the wheel alone does not activate Native shell.
 
 ## Compatibility
 
 - Backend 0.4.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Known compatible Pal baseline: commit
-  `ee9f9c3347842a398c5df2cb7fe4f11732c8fd56` (resident and Bunshin native integration).
+  `3a75d38ffed0c992f110520647dc857bc3985666` (indexed L1 request visibility and execution extension contract).
   Compatible later versions must preserve that adapter contract.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a
@@ -49,78 +49,31 @@ add it to Pal's launch environment, preserving its existing import paths.
 Check `n.__file__` to detect any older `.so` shadowing the new installation.
 Do not overwrite or unload a binary already mapped by a running process.
 
-Set `PAL_SHELL_BACKEND=native` in Pal's actual launcher/service environment. For
-a systemd user service, use a service drop-in; retain existing `PYTHONPATH` entries
-if adding a target directory. A venv installation normally needs no new import path.
-Record the previous configuration before changing it. Changes take effect in a
-new process: **notify the user to restart Pal after verification**.
+Install `plugin-remote-0.4.0.palpkg` using Pal's package installation flow. For
+offline preparation:
 
-## Instructions for Pal performing its own upgrade
-
-The user's request to install this backend authorizes the following preparation.
-Perform it, then tell the user exactly what changed and that a restart is needed.
-Do not turn installation into an unexplained source rewrite.
-
-1. Inspect your real launch command, Python executable, runtime root, platform,
-   current backend and installed module location. Preserve unrelated local edits,
-   service settings, proxy settings and credentials. Do not print secrets.
-2. Check compatibility with the baseline above. If the native host adapter and
-   backend factory are already present, **install and configure only**; no source
-   changes are necessary. If they are absent, prepare a normal Pal upgrade to a
-   compatible revision, preserving local changes. Do not invent a parallel tool
-   implementation from this binary's low-level API. If that cannot be reconciled,
-   explain the concrete conflict before switching the backend.
-3. Download the matching release wheel, verify its checksum, and test it in a
-   staging environment with the same Python version. If no wheel matches, build
-   from the release source below. Install the verified result into your Pal venv
-   or a fresh versioned target directory; retain the previous backend/binary.
-4. Run the installed-wheel tests and the host check below **in a separate process**
-   using the future launch environment. Confirm the imported module path, API
-   version, short output, background completion, timeout, file output and cleanup.
-   For source changes, also run Pal's native host integration suite. A successful
-   import alone is not an execution test.
-5. Set the persistent backend configuration only after tests pass. Review and
-   report the package version, module path, files/configuration changed, checks
-   run, failures if any, and exact rollback instructions. Do not commit unrelated
-   edits or silently change the selected model or tool policy.
-6. **Notify the user to restart; do not restart your own host or hot-unload the
-   extension.** Explain that live shell sessions do not survive restart. Let
-   outstanding work finish and deliver retained output before the user restarts.
-   After restart, verify `shell_status` reports native and run a harmless smoke
-   command. Bunshin may be remounted through its normal lifecycle when only its
-   Python host code changed; replacing a loaded native module needs a new process.
-
-Host check (using the future launch environment, from a compatible Pal install):
-
-```bash
-"$PAL_PYTHON" - <<'PY'
-import asyncio
-import _pal_shell_runtime as native
-from pal.execution.native_shell.adapter import ShellRuntime
-
-async def main():
-    assert native.API_VERSION == 2
-    print('Loaded:', native.__file__)
-    runtime = ShellRuntime()
-    try:
-        short = await runtime.run('printf native-ok')
-        assert short['session_id'] == 0 and short['stdout'] == 'native-ok'
-        background = await runtime.run('sleep 0.2; printf done', wait_ms=0)
-        assert background['session_id'] > 0
-        result = await runtime.read(background['session_id'], wait_ms=5000)
-        assert result['status'] == 'exited' and result['stdout'] == 'done'
-    finally:
-        await runtime.close()
-
-asyncio.run(main())
-PY
+```sh
+pal package install /absolute/path/to/plugin-remote-0.4.0.palpkg --runtime-root <runtime-root>
 ```
 
-Rollback: restore the previous launch settings or explicitly set
-`PAL_SHELL_BACKEND=python`, and notify the user to restart. Missing native modules
-are startup errors when native is selected. Never retry a failed or uncertain
-native command through Python automatically: its effects may already have occurred.
-Keep old versioned binaries until no running process uses them.
+The package retains the `remote` plugin ID for upgrades from 0.4.0. Its entrypoint
+is now `pal_shell_native.plugin`; `execution:extensions` is the required Pal port.
+`PAL_SHELL_BACKEND` no longer selects an implementation. Preserve other launch
+settings and import paths. A binary or Pal core upgrade requires a new process;
+ordinary Python plugin reload uses `plugin_attach` at an idle lifecycle boundary.
+Never overwrite a mapped binary or drop unresolved work to force a reload.
+
+Validate wheel import location/API, then check the installed plugin's `run_shell`
+schema contains `wait_ms`, `tty` and `target`, discover `shell_session`, and run a
+harmless command. Test a background wait and observation before real work. The
+acceptance suite also covers failed activation, busy detach, restored built-in
+schema, remote routing and Bunshin sandbox dependencies without paid LLM calls.
+
+To roll back the plugin, settle live sessions and retained output, then detach or
+disable `remote` through Pal's lifecycle. The built-in shell becomes available.
+Changing a wheel or reverting Pal core additionally requires restoring compatible
+launch paths and restarting via the host supervisor. Keep previous artifacts and
+runtime data. Never automatically retry an uncertain command on another backend.
 
 ## Build from source
 
@@ -153,15 +106,19 @@ cmake --build build/check --parallel 2
 ctest --test-dir build/check --output-on-failure
 ```
 
-Pal retains the full resident, Bunshin, paging and cancellation integration suite
-under `native/shell_runtime/tests`; its CI installs this backend at a pinned
-revision. Backend CI also runs those tests against the compatible Pal baseline.
+This repository owns the resident, Bunshin, paging and cancellation integration
+suite in `tests/pal_host`. CI installs the pinned Pal baseline and this backend.
+For local source checkouts, install Pal's test dependencies and this wheel, then:
+
+```sh
+PYTHONPATH=pal_plugin:tests/pal_host_support python -m unittest discover -s tests/pal_host -v
+```
 
 ## Ownership and limits
 
 The extension owns native executors, process groups, PTYs, output files and
-session IDs. Pal owns asyncio delivery, write admission, L1 acknowledgement,
-result handles, tool discovery, approvals and model wakeups. A response wait
+session IDs. The plugin connects asyncio delivery, write admission, approvals and model wakeups
+to Pal's generic event, L1, result pager and tool registry contracts. A response wait
 expiring exposes a session; a hard timeout cancels the process. Small output is
 returned inline and large output is retained in files for Pal's existing pager.
 
@@ -270,7 +227,8 @@ active sessions and retained outputs; building/installing files does not reload 
 
 ## Companion Pal plugin
 
-`pal_plugin/` owns the client-side remote Hub, target Slots and plugin manifest.
+`pal_plugin/` owns the Native execution implementation, tools, session lifecycle
+adapter, Bunshin driver, remote Hub, target Slots, setup skill and manifest.
 It ships as `plugin-remote-0.4.0.palpkg` alongside the native wheels and independent
 worker bundles. The worker needs no Pal installation; the client plugin runs in
 Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.

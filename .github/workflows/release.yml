@@ -66,15 +66,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ee9f9c3347842a398c5df2cb7fe4f11732c8fd56
+          ref: 3a75d38ffed0c992f110520647dc857bc3985666
           path: .pal
       - run: python -m pip install . './.pal[test]'
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '2'
       - name: Resident and Bunshin integration against installed extension
-        run: python -m unittest discover -s .pal/native/shell_runtime/tests -v
+        run: python -m unittest discover -s tests/pal_host -v
         env:
-          PYTHONPATH: pal_plugin:.pal/native/shell_runtime/python
+          PYTHONPATH: pal_plugin:tests/pal_host_support
       - name: Slot admission and cancellation through multiplexed RPC
         run: python tests/test_remote_admission.py -v
         env:
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ee9f9c3347842a398c5df2cb7fe4f11732c8fd56
+          ref: 3a75d38ffed0c992f110520647dc857bc3985666
           path: .pal
       - run: python -m pip install ./.pal
       - run: pal package build pal_plugin --output dist

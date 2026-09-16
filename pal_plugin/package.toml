@@ -2,5 +2,5 @@ kind = "plugin"
 id = "remote"
 version = "0.4.0"
 python = "host"
-host_files = ["plugin.toml", "pal_shell_remote", "LICENSE"]
+host_files = ["plugin.toml", "pal_shell_native", "pal_shell_remote", "LICENSE"]
 hooks = "hooks.py"

@@ -69,6 +69,24 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'], 'running')
         self.assertFalse((await self.client.request('events', {'after': 0, 'wait_ms': 0}))['events'])
 
+    async def test_observe_does_not_allocate_operations_or_change_attention(self):
+        from dataclasses import replace
+        self.worker.config = replace(self.worker.config, operation_limit=1)
+        oid = await self.submit('sleep 30')
+        initial = (await self.query(oid))['result']
+        before = dict(self.worker.operations)
+        metadata = await self.client.request('metadata', {})
+        self.assertIn('observe', metadata['observation_methods'])
+        for _ in range(50):
+            snapshot = await self.client.request('observe', {'session_id': initial['session_id']})
+            self.assertEqual(snapshot['status'], 'running')
+            self.assertEqual(snapshot['watch_generation'], initial['watch_generation'])
+            self.assertEqual(snapshot['watching'], initial['watching'])
+        self.assertEqual(self.worker.operations, before)
+        with self.assertRaises(RemoteError):
+            await self.client.request('observe', {'session_id': initial['session_id'], 'wait_ms': 1000})
+        self.assertEqual(self.worker.operations, before)
+
     async def test_disconnect_and_deduplicate(self):
         file = self.path/'count'
         gate = self.path/'finish'

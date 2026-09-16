@@ -9,23 +9,17 @@ import tempfile
 import time
 import tomllib
 
-from pal.core.module_registry import ModuleHandle, MODULE_TIER_DETACHABLE
 from pal.foundation.sidecar import SidecarEndpoint, SidecarRpcClient, python_subprocess_env
 from .port import HubPort
 
 
-class RemotePlugin:
-    plugin_id = 'remote'
-    version = '0.4.0'
-
-    def __init__(self, runtime_root):
+class RemoteHubClient:
+    def __init__(self, runtime_root, owner):
         self.runtime_root = Path(runtime_root)
-        self.process = self.directory = self.port = self.owner = None
+        self.process = self.directory = self.port = None
+        self.owner = owner
 
-    def start(self, scope):
-        self.owner = scope.context.port_registry.get('execution:native_shell_targets')
-        if self.owner is None:
-            raise RuntimeError('Remote requires the native shell execution backend')
+    def start(self):
         config = self.runtime_root / 'config' / 'remote.toml'
         try:
             targets = tomllib.loads(config.read_text()).get('targets', [])
@@ -36,7 +30,7 @@ class RemotePlugin:
         if not targets:
             # Default-enabled local-only installations need no RPC package or sidecar.
             self.port = HubPort(None)
-            return self._publish(scope)
+            return self._attach()
         self.directory = tempfile.TemporaryDirectory(prefix='pal-hub-')
         endpoint = SidecarEndpoint(self.runtime_root, 'remote', runtime_dir_override=Path(self.directory.name))
         self.port = HubPort(endpoint)
@@ -60,18 +54,15 @@ class RemotePlugin:
                 time.sleep(.05)
             else:
                 raise RuntimeError('Remote hub startup timed out')
-            return self._publish(scope)
+            return self._attach()
         except BaseException:
             self.close()
             raise
 
-    def _publish(self, scope):
+    def _attach(self):
         try:
             self.owner.attach_remote(self.port)
-            handle = ModuleHandle(module_id='remote', tier=MODULE_TIER_DETACHABLE, detachable=True,
-                                  ports={'remote': self.port}, shutdown_sync=self.close)
-            scope.context.register_module(handle)
-            return handle
+            return self.port
         except BaseException:
             self.close()
             raise
@@ -94,7 +85,3 @@ class RemotePlugin:
         if self.directory:
             self.directory.cleanup()
             self.directory = None
-
-
-def build_plugin(context):
-    return RemotePlugin(context.runtime_root)
