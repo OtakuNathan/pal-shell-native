@@ -201,7 +201,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
                 await self.wait_completion()
             resume.set()
             await asyncio.wait_for(pump, 5)
-            self.assertFalse(self.model_inputs)
+            # Preparation can make the newer terminal event ready during this
+            # pump or the next one. Only stale wait delivery is forbidden.
+            self.assertLessEqual(len(self.model_inputs), 1 if action == "terminate" else 0)
             self.assertFalse(self.core.state.active_turns)
             await self.pump()
             self.assertEqual(len(self.model_inputs), 1 if action == "terminate" else 0)
@@ -231,6 +233,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         final = await self.session(sid, wait_ms=5000)
         self.assertTrue(final.ok, final.text)
         self.assertIn("hello", final.structured["stdout"])
+        # Tool delivery schedules ACK cleanup without blocking its result.
+        await asyncio.gather(*tuple(self.owner.observations.acking.values()))
         status = await self.tool("call_tool", {"name": "shell_status", "args": {}})
         self.assertIn("sessions", status.structured)
         self.assertFalse(status.structured["sessions"])

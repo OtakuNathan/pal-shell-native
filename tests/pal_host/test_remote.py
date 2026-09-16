@@ -124,7 +124,9 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         operations = dict(self.worker.operations)
         for _ in range(20):
             self.assertIsNone(await self.owner.shell.observe(sid))
-        self.assertEqual(methods, ['metadata'])
+        self.assertEqual(methods.count('metadata'), 1)
+        # The independent event poller may run while observe awaits metadata.
+        self.assertLessEqual(set(methods), {'metadata', 'events'})
         self.assertEqual(self.worker.operations, operations)
 
     async def test_privileged_precommit_failure_does_not_leave_write_busy(self):
