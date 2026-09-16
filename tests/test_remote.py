@@ -265,6 +265,10 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.query(oid)
                 self.assertEqual(response['state'], 'complete')
                 self.assertEqual(response['result']['status'], 'running')
+                with self.assertRaises(RemoteError) as renewal:
+                    await self.client.request('session', {'operation_id': uuid4().hex,
+                        'session_id': response['result']['session_id'], 'action': 'extend', 'extend_by_ms': 1000})
+                self.assertEqual(renewal.exception.code, 'deadline_not_extendable')
                 if consume:
                     self.assertEqual(consume_authentication(self.worker, signed, management=True), {'authorized':True})
                     with self.assertRaises(RemoteError):
