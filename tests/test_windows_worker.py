@@ -48,7 +48,7 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         try:
             send(0, 'hello', {})
             _, hello = await receive()
-            self.assertEqual(hello['protocol_version'], 2)
+            self.assertEqual(hello['protocol_version'], 3)
             signature = self.key.sign(auth_message(hello['nonce'], 'test', hello['runtime_epoch'], 'client')).hex()
             send(0, 'authenticate', {'client_id': 'client', 'signature': signature})
             await receive()

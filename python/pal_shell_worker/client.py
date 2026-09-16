@@ -41,7 +41,7 @@ class Connection:
             self.reader = asyncio.create_task(self._receive())
             hello = await self._exchange('hello', {}, 5000, legacy=True)
             if hello.get('protocol_version') != PROTOCOL_VERSION:
-                raise RemoteError('protocol_mismatch', 'Install matching protocol-v2 worker and client')
+                raise RemoteError('protocol_mismatch', 'Install matching protocol-v3 worker and client')
             if hello.get('worker_id') != self.worker_id:
                 raise RemoteError('worker_identity_mismatch', 'Connected worker is not the configured identity')
             if self.epoch and hello.get('runtime_epoch') != self.epoch:

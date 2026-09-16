@@ -33,7 +33,7 @@ class BackendTests(unittest.TestCase):
         return self.call('run', '/bin/sh', command, '', False, wait, timeout, budget)
 
     def test_short_output_and_exit_code(self):
-        self.assertEqual(native.API_VERSION, 1)
+        self.assertEqual(native.API_VERSION, 2)
         event = self.run_shell('printf hello; printf error >&2; exit 7')
         self.assertEqual((event['session_id'], event['status'], event['returncode']), (0, 'exited', 7))
         self.assertEqual(event['stdout_bytes'], b'hello')

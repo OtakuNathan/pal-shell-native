@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "session_lifecycle.h"
 #ifdef _WIN32
 #include "output_windows.h"
 #else
@@ -51,13 +52,14 @@ struct Runtime::Impl {
 #endif
         std::shared_ptr<Session> session; int fd; bool error;
     };
-    enum class TimerKind { wait, deadline, kill };
+    enum class TimerKind { wait, deadline, kill, watch };
     struct Timer {
         uv_timer_t handle{};
         std::shared_ptr<Session> session;
         TimerKind kind;
         id_t request;
         bool initial;
+        id_t generation = 0;
     };
     struct Session {
         Impl* owner;
@@ -66,6 +68,8 @@ struct Runtime::Impl {
         bool tty = false, exposed = false, delivered = false, exit_seen = false, settled = false;
         bool flow_done = false, finished = false;
         bool result_delivered = false;
+        SessionLifecycle lifecycle;
+        id_t event_sequence = 0, finished_at = 0;
         int wait_ms = 0, timeout_ms = 0, returncode = 0, signal = 0, inline_limit = 0;
         id_t output_limit = 0, captured = 0;
         bool truncated = false;
@@ -182,11 +186,29 @@ struct Runtime::Impl {
             throw std::runtime_error("invalid_session: unknown or retired runtime/session");
         return found->second;
     }
+    id_t now() { uv_update_time(&loop); return uv_now(&loop); }
+    void cancel_timer(const std::shared_ptr<Session>& s, TimerKind kind) {
+        for (auto* t : std::vector<Timer*>(s->timers)) if (t->kind == kind) close_timer(t);
+    }
+    void reset_deadline(const std::shared_ptr<Session>& s) {
+        cancel_timer(s, TimerKind::deadline);
+        const auto clock = now();
+        if (s->lifecycle.deadline) timer(s, TimerKind::deadline, s->lifecycle.deadline > clock ? s->lifecycle.deadline - clock : 0);
+    }
     Event snapshot(const std::shared_ptr<Session>& s, id_t request, bool initial = false) {
         Event event;
         event.request = request;
         event.session = initial && s->finished ? 0 : s->id;
         event.tty = s->tty;
+        const auto clock = s->finished ? s->finished_at : now();
+        event.event_sequence = s->event_sequence;
+        event.watch_generation = s->lifecycle.generation;
+        event.watching = s->lifecycle.watching;
+        event.elapsed_ms = clock - s->lifecycle.started;
+        event.has_deadline = s->lifecycle.deadline != 0;
+        event.remaining_ms = s->lifecycle.deadline > clock ? s->lifecycle.deadline - clock : 0;
+        event.has_wake = s->lifecycle.wake != 0;
+        event.wake_remaining_ms = s->lifecycle.wake > clock ? s->lifecycle.wake - clock : 0;
         event.truncated = s->truncated;
         event.status = s->finished ? (s->error.empty() ? (s->reason.empty() ? "exited" : s->reason) : "failed")
                                    : (s->reason.empty() ? "running" : "terminating");
@@ -226,9 +248,9 @@ struct Runtime::Impl {
             delete static_cast<Timer*>(handle->data);
         });
     }
-    void timer(const std::shared_ptr<Session>& s, TimerKind kind, int ms,
+    void timer(const std::shared_ptr<Session>& s, TimerKind kind, id_t ms,
                id_t request = 0, bool initial = false) {
-        auto* value = new Timer{{}, s, kind, request, initial};
+        auto* value = new Timer{{}, s, kind, request, initial, s->lifecycle.generation};
         int code = uv_timer_init(&loop, &value->handle);
         if (code) { delete value; throw std::runtime_error(uv_strerror(code)); }
         value->handle.data = value;
@@ -242,6 +264,13 @@ struct Runtime::Impl {
             if (kind == TimerKind::wait) {
                 if (t->initial) session->exposed = true;
                 owner->emit(owner->snapshot(session, t->request, t->initial));
+            }
+            if (kind == TimerKind::watch && !session->exit_seen
+                && session->lifecycle.fire(owner->now(), t->generation)) {
+                ++session->event_sequence;
+                auto event = owner->snapshot(session, 0);
+                event.event_kind = "wait_expired";
+                owner->emit(std::move(event));
             }
             close_timer(t);
             if (kind == TimerKind::deadline && !session->settled) {
@@ -368,6 +397,7 @@ struct Runtime::Impl {
             if (child.output >= 0) s->output = poll(s, std::exchange(child.output, -1), false);
             if (child.error >= 0) s->errors = poll(s, std::exchange(child.error, -1), true);
             timer(s, TimerKind::wait, s->wait_ms, s->initial_request, true);
+            s->lifecycle.start(now(), s->timeout_ms);
             if (s->timeout_ms) timer(s, TimerKind::deadline, s->timeout_ms);
             s->waiter = std::thread([this, s] {
                 const int error = observe_exit(s->pid);
@@ -392,6 +422,8 @@ struct Runtime::Impl {
     }
     void request_stop(const std::shared_ptr<Session>& s) noexcept {
         if (s->settled) return;
+        s->lifecycle.stop();
+        cancel_timer(s, TimerKind::watch);
         if (s->reason.empty()) s->reason = "cancelled";
         signal_child(s->pid, s->tty && s->output ? s->output->fd : -1, SIGTERM);
         try { timer(s, TimerKind::kill, 1000); }
@@ -419,6 +451,10 @@ struct Runtime::Impl {
     void complete(const std::shared_ptr<Session>& s) noexcept {
         if (!s->settled || !s->flow_done || s->finished) return;
         s->finished = true;
+        s->finished_at = now();
+        s->lifecycle.stop();
+        ++s->event_sequence;
+        if (!s->lifecycle.watching) s->result_delivered = true;
         if (writer == s->id) writer = 0;
         bool initial_delivered = s->exposed;
         for (auto* t : std::vector<Timer*>(s->timers)) {
@@ -430,7 +466,9 @@ struct Runtime::Impl {
         }
         if (!initial_delivered) emit(snapshot(s, s->initial_request, true));
         if (s->exposed) {
-            emit(snapshot(s, 0));
+            auto event = snapshot(s, 0);
+            event.event_kind = "terminal";
+            emit(std::move(event));
         }
         completed.push_back(s->id);
         maybe_shutdown();
@@ -514,6 +552,37 @@ void Runtime::read(id_t request, id_t id, int wait_ms) {
         auto session = impl_->lookup(id);
         if (session->finished) impl_->emit(impl_->snapshot(session, request));
         else impl_->timer(session, Impl::TimerKind::wait, wait_ms, request);
+    });
+}
+void Runtime::watch(id_t request, id_t id, int wait_ms, int extend_by_ms) {
+    if (wait_ms <= 0 || wait_ms > 300000 || extend_by_ms < 0) throw std::invalid_argument("invalid watch budget");
+    impl_->post(request, [=] {
+        auto s = impl_->lookup(id);
+        if (s->exit_seen) throw std::runtime_error("session_not_running: process has exited");
+        s->lifecycle.watch(impl_->now(), wait_ms, extend_by_ms);
+        impl_->cancel_timer(s, Impl::TimerKind::watch);
+        if (extend_by_ms) impl_->reset_deadline(s);
+        impl_->timer(s, Impl::TimerKind::watch, wait_ms);
+        impl_->emit(impl_->snapshot(s, request));
+    });
+}
+void Runtime::extend(id_t request, id_t id, int extend_by_ms) {
+    if (extend_by_ms <= 0) throw std::invalid_argument("positive extension required");
+    impl_->post(request, [=] {
+        auto s = impl_->lookup(id);
+        if (s->exit_seen) throw std::runtime_error("session_not_running: process has exited");
+        s->lifecycle.extend(impl_->now(), extend_by_ms);
+        impl_->reset_deadline(s);
+        impl_->emit(impl_->snapshot(s, request));
+    });
+}
+void Runtime::unwatch(id_t request, id_t id) {
+    impl_->post(request, [=] {
+        auto s = impl_->lookup(id);
+        s->lifecycle.unwatch();
+        impl_->cancel_timer(s, Impl::TimerKind::watch);
+        if (s->finished) s->result_delivered = true;
+        impl_->emit(impl_->snapshot(s, request));
     });
 }
 void Runtime::write(id_t request, id_t id, std::string input) {

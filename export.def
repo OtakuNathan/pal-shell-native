@@ -13,6 +13,15 @@ BEGIN_CLASS(pal_shell, Runtime)
     BEGIN_MEMBER_CALLABLE_GROUP(read)
         DECL_MEMBER_FUNCTION(void, pal_shell::id_t, pal_shell::id_t, int)
     END_MEMBER_CALLABLE_GROUP
+    BEGIN_MEMBER_CALLABLE_GROUP(watch)
+        DECL_MEMBER_FUNCTION(void, pal_shell::id_t, pal_shell::id_t, int, int)
+    END_MEMBER_CALLABLE_GROUP
+    BEGIN_MEMBER_CALLABLE_GROUP(extend)
+        DECL_MEMBER_FUNCTION(void, pal_shell::id_t, pal_shell::id_t, int)
+    END_MEMBER_CALLABLE_GROUP
+    BEGIN_MEMBER_CALLABLE_GROUP(unwatch)
+        DECL_MEMBER_FUNCTION(void, pal_shell::id_t, pal_shell::id_t)
+    END_MEMBER_CALLABLE_GROUP
     BEGIN_MEMBER_CALLABLE_GROUP(write)
         DECL_MEMBER_FUNCTION(void, pal_shell::id_t, pal_shell::id_t, std::string)
     END_MEMBER_CALLABLE_GROUP

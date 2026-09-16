@@ -96,7 +96,7 @@ class Worker:
         self.epoch = uuid4().hex
         self.loop = asyncio.get_running_loop()
         self.runtime = native.Runtime(32)
-        if not hasattr(self.runtime, "run_limited"):
+        if native.API_VERSION != 2 or not hasattr(self.runtime, "watch"):
             self.runtime.close()
             raise RemoteError("native_incompatible", "Worker requires the matching bounded-output native extension")
         self.sequence = itertools.count(1)
@@ -294,7 +294,10 @@ class Worker:
         elif event['output_id']:
             result = self._snapshot(event)
             self.cursor += 1
-            self.events[event['output_id']] = {'cursor': self.cursor, 'result': result}
+            if event.get('watching', True) or event['status'] in TERMINAL:
+                self.events[event['output_id']] = {'cursor': self.cursor, 'result': result}
+            else:
+                self.events.pop(event['output_id'], None)
             self.changed.set()
 
     def _snapshot(self, event):
@@ -356,8 +359,13 @@ class Worker:
             else:
                 sid, action = args['session_id'], args['action']
                 arguments = {'read': (sid, args.get('wait_ms', 0)), 'write': (sid, args.get('text', '')),
-                             'resize': (sid, args.get('rows'), args.get('columns')), 'terminate': (sid,)}
-                self._finish(op, self._snapshot(await self._native(action, *arguments[action])))
+                             'resize': (sid, args.get('rows'), args.get('columns')), 'terminate': (sid,),
+                             'watch': (sid, args.get('wait_ms', 0), args.get('extend_by_ms', 0)),
+                             'extend': (sid, args.get('extend_by_ms', 0)), 'unwatch': (sid,)}
+                result = self._snapshot(await self._native(action, *arguments[action]))
+                if action in {'watch', 'unwatch'}:
+                    self.events.pop(sid, None)
+                self._finish(op, result)
         except RemoteError as exc:
             if op.method == 'submit':
                 self.reservations.discard(op.operation_id)
@@ -418,10 +426,18 @@ class Worker:
                 if sid not in self.native_outputs:
                     raise RemoteError('invalid_session', 'Session is unknown or released')
                 action = params.get('action', 'read')
-                allowed = {'read': {'wait_ms'}, 'write': {'text'}, 'resize': {'rows', 'columns'}, 'terminate': set()}
+                allowed = {'read': {'wait_ms'}, 'write': {'text'}, 'resize': {'rows', 'columns'}, 'terminate': set(),
+                           'watch': {'wait_ms', 'extend_by_ms'}, 'extend': {'extend_by_ms'}, 'unwatch': set()}
                 if action not in allowed or set(params) - {'session_id', 'action'} - allowed[action]:
                     raise RemoteError('invalid_request', 'Unsupported session action or arguments')
                 params['action'] = action
+                if action in {'watch', 'extend'}:
+                    delta = integer(params.get('extend_by_ms', 0), 'extend_by_ms', 1 if action == 'extend' else 0)
+                    if action == 'watch':
+                        integer(params.get('wait_ms'), 'wait_ms', 1, 300000)
+                    owner = self.operations.get(self.native_owners.get(sid, ''))
+                    if delta and owner and owner.method == 'privileged':
+                        raise RemoteError('deadline_not_extendable', 'Signed management budgets cannot be extended')
                 if action == 'read':
                     integer(params.get('wait_ms', 0), 'wait_ms', 0, 300000)
                 if action == 'write':

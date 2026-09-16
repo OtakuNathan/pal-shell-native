@@ -46,6 +46,29 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
     async def query(self, oid, client=None):
         return await (client or self.client).request('query', {'operation_id': oid, 'wait_ms': 5000}, timeout_ms=6000)
 
+    async def test_session_extension_receipt_is_idempotent_and_watch_is_one_shot(self):
+        oid = uuid4().hex
+        await self.client.request('submit', {'operation_id': oid, 'cmd': 'sleep 5', 'wait_ms': 0, 'timeout_ms': 2000})
+        initial = (await self.query(oid))['result']
+        sid = initial['session_id']
+        request = {'operation_id': uuid4().hex, 'session_id': sid, 'action': 'watch',
+                   'wait_ms': 20, 'extend_by_ms': 1000}
+        await self.client.request('session', request)
+        first = await self.query(request['operation_id'])
+        await self.client.request('session', request)
+        repeated = await self.query(request['operation_id'])
+        self.assertEqual(first, repeated)
+        self.assertEqual(first['result']['remaining_ms'] + first['result']['elapsed_ms'], 3000)
+        events = await self.client.request('events', {'after': 0, 'wait_ms': 1000})
+        self.assertEqual(len(events['events']), 1)
+        self.assertEqual(events['events'][0]['result']['event_kind'], 'wait_expired')
+        quiet = {'operation_id': uuid4().hex, 'session_id': sid, 'action': 'unwatch'}
+        await self.client.request('session', quiet)
+        result = (await self.query(quiet['operation_id']))['result']
+        self.assertFalse(result['watching'])
+        self.assertEqual(result['status'], 'running')
+        self.assertFalse((await self.client.request('events', {'after': 0, 'wait_ms': 0}))['events'])
+
     async def test_disconnect_and_deduplicate(self):
         file = self.path/'count'
         gate = self.path/'finish'

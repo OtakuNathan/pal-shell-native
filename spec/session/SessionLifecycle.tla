@@ -22,7 +22,7 @@ Tick == /\ now < Horizon /\ now' = now + 1
         /\ UNCHANGED <<phase, deadline, watching, generation, due, pending,
                        pendingGen, extended, deliveredWait, deliveredTerminal, duplicate>>
 Watch(s) == /\ phase[s] = "running"
-            /\ deadline[s] = 0 \/ now < deadline[s]
+            /\ (deadline[s] = 0 \/ now < deadline[s])
             /\ generation[s] < MaxGeneration /\ now < Horizon
             /\ generation' = [generation EXCEPT ![s] = @ + 1]
             /\ due' = [due EXCEPT ![s] = now + 1]

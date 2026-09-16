@@ -35,6 +35,13 @@ template<> struct py_backend::converter<pal_shell::Event> {
         put("request_id", PyLong_FromUnsignedLongLong(event.request));
         put("session_id", PyLong_FromUnsignedLongLong(event.session));
         put("output_id", PyLong_FromUnsignedLongLong(event.output));
+        put("event_kind", PyUnicode_FromString(event.event_kind.c_str()));
+        put("event_sequence", PyLong_FromUnsignedLongLong(event.event_sequence));
+        put("watch_generation", PyLong_FromUnsignedLongLong(event.watch_generation));
+        put("watching", PyBool_FromLong(event.watching));
+        put("elapsed_ms", PyLong_FromUnsignedLongLong(event.elapsed_ms));
+        put("remaining_ms", event.has_deadline ? PyLong_FromUnsignedLongLong(event.remaining_ms) : Py_NewRef(Py_None));
+        put("wake_remaining_ms", event.has_wake ? PyLong_FromUnsignedLongLong(event.wake_remaining_ms) : Py_NewRef(Py_None));
         put("status", PyUnicode_FromString(event.status.c_str()));
         put("error", PyUnicode_DecodeUTF8(event.error.data(), event.error.size(), "replace"));
         put("stdout_path", PyUnicode_DecodeFSDefault(event.stdout_path.c_str()));
@@ -62,7 +69,7 @@ static PyModuleDef module_definition = {
 PyMODINIT_FUNC PyInit__pal_shell_runtime() {
     PyObject* result = PyModule_Create(&module_definition);
     if (!result) return nullptr;
-    if (PyModule_AddIntConstant(result, "API_VERSION", 1) < 0) {
+    if (PyModule_AddIntConstant(result, "API_VERSION", 2) < 0) {
         Py_DECREF(result);
         return nullptr;
     }

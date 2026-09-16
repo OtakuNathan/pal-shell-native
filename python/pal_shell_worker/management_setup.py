@@ -90,7 +90,7 @@ is performed by the installer. After it succeeds, continue at step 3 below.
 
 Manual equivalent (optional):
 
-1. Install the COMPLETE matching worker 0.3.0 bundle at {executable}.
+1. Install the COMPLETE matching worker 0.4.0 bundle at {executable}.
    Its program, dependencies and parent paths must be root-owned and not writable
    by group/others. Do not point a root launcher at a user-writable virtualenv.
 2. In an administrator terminal, review these generated files, then install:

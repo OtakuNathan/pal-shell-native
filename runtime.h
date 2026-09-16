@@ -8,6 +8,9 @@ namespace dynabridge::pal_shell {
 using id_t = std::uint64_t;
 struct Event {
     id_t request = 0, session = 0, output = 0;
+    std::string event_kind = "snapshot";
+    id_t event_sequence = 0, watch_generation = 0, elapsed_ms = 0, remaining_ms = 0, wake_remaining_ms = 0;
+    bool watching = true, has_deadline = false, has_wake = false;
     std::string status, error, stdout_path, stderr_path, stdout_bytes, stderr_bytes;
     std::uint64_t stdout_total = 0, stderr_total = 0;
     int returncode = 0, signal = 0;
@@ -27,6 +30,9 @@ public:
     void run_limited(id_t request, std::string shell, std::string command, std::string cwd,
                      bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit);
     void read(id_t request, id_t session, int wait_ms);
+    void watch(id_t request, id_t session, int wait_ms, int extend_by_ms);
+    void extend(id_t request, id_t session, int extend_by_ms);
+    void unwatch(id_t request, id_t session);
     void write(id_t request, id_t session, std::string input);
     void resize(id_t request, id_t session, int rows, int columns);
     void terminate(id_t request, id_t session);
