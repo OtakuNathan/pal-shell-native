@@ -12,9 +12,9 @@ Pal can read the procedure below and perform the integration on its user's behal
 
 ## Compatibility
 
-- Backend 0.1.x exports `_pal_shell_runtime`, `API_VERSION = 1`.
+- Backend 0.4.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Known compatible Pal baseline: commit
-  `da16c294f143d040f3bfc064411c4244156cefeb` (resident and Bunshin native integration).
+  `ba41482f456872ab1daf2e730a269e00b20e8654` (resident and Bunshin native integration).
   Compatible later versions must preserve that adapter contract.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a
@@ -36,14 +36,14 @@ happens to be on PATH. In a Pal virtual environment, installation is:
 
 ```bash
 PAL_PYTHON=/absolute/path/to/pal-venv/bin/python
-"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.1.0-MATCHING_TAGS.whl
+"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.4.0-MATCHING_TAGS.whl
 "$PAL_PYTHON" -c 'import _pal_shell_runtime as n; print(n.__file__, n.API_VERSION)'
 "$PAL_PYTHON" /absolute/path/to/test_backend.py
 ```
 
 If Pal deliberately uses an OS-managed Python, do not override its package
 protections. Instead install with `--target` into a **new versioned directory**
-under the actual runtime root (for example `<runtime-root>/native/shell-runtime/0.1.0`).
+under the actual runtime root (for example `<runtime-root>/native/shell-runtime/0.4.0`).
 Test that directory with the same interpreter and a temporary `PYTHONPATH`; then
 add it to Pal's launch environment, preserving its existing import paths.
 Check `n.__file__` to detect any older `.so` shadowing the new installation.
@@ -251,7 +251,7 @@ claims E2E. Verify approved `apt update` on Linux (approved `id` on Mac) separat
 
 ## Multiplexed transport and upgrades
 
-Install matching 0.3.0 wheel, worker and palpkg: protocol-v2 negotiation rejects an
+Install matching 0.4.0 wheel, worker and palpkg: protocol-v3 negotiation rejects an
 old worker before command submission. A 64-bit transport request ID wraps the
 unchanged Dynabridge payload. One caller-owned libuv RPC loop/executor per Hub or
 worker owns accepts, connected I/O and FF request awaits. Python business callbacks
@@ -271,7 +271,7 @@ active sessions and retained outputs; building/installing files does not reload 
 ## Companion Pal plugin
 
 `pal_plugin/` owns the client-side remote Hub, target Slots and plugin manifest.
-It ships as `plugin-remote-0.3.0.palpkg` alongside the native wheels and independent
+It ships as `plugin-remote-0.4.0.palpkg` alongside the native wheels and independent
 worker bundles. The worker needs no Pal installation; the client plugin runs in
 Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
 
@@ -282,7 +282,7 @@ pal package build pal_plugin --output dist
 ```
 
 Install the matching native wheel into Pal's interpreter first, then use
-`pal package install dist/plugin-remote-0.3.0.palpkg --runtime-root <runtime-root>`
+`pal package install dist/plugin-remote-0.4.0.palpkg --runtime-root <runtime-root>`
 for offline preparation, or the running host's authorized package installation
 flow. Verification checks the native Runtime, RPC client and resident Pal contract;
 it does not install dependencies or restart services. The plugin uses the existing
@@ -320,3 +320,33 @@ RPC client identity enrollment is unchanged. Start the worker independently of
 the SSH session under an ordinary user, for example with a manually triggered,
 limited-privilege interactive Scheduled Task. No startup/shutdown actions are
 configured for this target. See Pal's `docs/remote-shell.md` for the full contract.
+
+
+## Session observation and deadlines (0.4.0)
+
+`run` retains its existing response wait: no result is returned until exit or that
+wait expires. Expiry returns a live session, not failure. The process deadline is
+independent and optional. Native control methods take a request ID and session ID:
+`watch(request, session, wait_ms, extend_by_ms)`, `extend(request, session, delta)`
+and `unwatch(request, session)`. Watch returns immediately, replaces one pending
+watch, and can atomically extend a finite deadline. Unwatch suppresses future model
+notifications; it does not terminate the process, release its running write lease,
+or detach it from its Runtime's lifetime. Read never rearms or renews anything.
+
+Snapshots carry `event_kind`, `event_sequence`, `watch_generation`, `watching`,
+`elapsed_ms`, nullable `remaining_ms`, and nullable `wake_remaining_ms`. Unsolicited
+native terminal snapshots still reach the delivery adapter for bookkeeping when
+unwatched; they must not start an agent turn. The host rechecks observation generation
+before delivery and uses stable event IDs for L1 deduplication. It appends updates
+instead of editing old tool results. Output is retained under the existing bounded
+lifetime: a retired output is not evidence that its command never ran.
+
+Finite deadline extensions are additive and rejected at/after expiry or termination.
+No deadline returns `no_deadline`; extensions do not invent a new finite budget.
+The remote operation ID is an idempotency key: query/retry that operation after a
+lost reply instead of submitting a fresh extension. Signed management operations
+reject renewal with `deadline_not_extendable`.
+
+Run `scripts/check_session_tla.sh /path/to/tla2tools.jar` for the independent model,
+`ctest --test-dir build/check --output-on-failure` for native transitions and lifetime,
+and `python tests/test_session_lifecycle.py` for installed-extension acceptance.
