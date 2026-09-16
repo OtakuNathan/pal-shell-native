@@ -99,7 +99,7 @@ import _pal_shell_runtime as native
 from pal.execution.native_shell.adapter import ShellRuntime
 
 async def main():
-    assert native.API_VERSION == 1
+    assert native.API_VERSION == 2
     print('Loaded:', native.__file__)
     runtime = ShellRuntime()
     try:
