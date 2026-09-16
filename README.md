@@ -14,7 +14,7 @@ Pal can read the procedure below and perform the integration on its user's behal
 
 - Backend 0.4.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Known compatible Pal baseline: commit
-  `ba41482f456872ab1daf2e730a269e00b20e8654` (resident and Bunshin native integration).
+  `a85ebb640573bd1ce6c169691e3e018c5013b17f` (resident and Bunshin native integration).
   Compatible later versions must preserve that adapter contract.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a

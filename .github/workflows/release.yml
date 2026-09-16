@@ -1,7 +1,7 @@
 name: build and test extension
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ba41482f456872ab1daf2e730a269e00b20e8654
+          ref: a85ebb640573bd1ce6c169691e3e018c5013b17f
           path: .pal
       - run: python -m pip install . './.pal[test]'
         env:
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ba41482f456872ab1daf2e730a269e00b20e8654
+          ref: a85ebb640573bd1ce6c169691e3e018c5013b17f
           path: .pal
       - run: python -m pip install ./.pal
       - run: pal package build pal_plugin --output dist
