@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: a85ebb640573bd1ce6c169691e3e018c5013b17f
+          ref: ee9f9c3347842a398c5df2cb7fe4f11732c8fd56
           path: .pal
       - run: python -m pip install . './.pal[test]'
         env:
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: a85ebb640573bd1ce6c169691e3e018c5013b17f
+          ref: ee9f9c3347842a398c5df2cb7fe4f11732c8fd56
           path: .pal
       - run: python -m pip install ./.pal
       - run: pal package build pal_plugin --output dist
