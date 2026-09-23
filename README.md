@@ -308,3 +308,15 @@ reject renewal with `deadline_not_extendable`.
 Run `scripts/check_session_tla.sh /path/to/tla2tools.jar` for the independent model,
 `ctest --test-dir build/check --output-on-failure` for native transitions and lifetime,
 and `python tests/test_session_lifecycle.py` for installed-extension acceptance.
+
+## POSIX temporary directory
+
+Native output files use a nonempty `TMPDIR`; if it is unset or empty they use
+`/tmp`. Configure an existing writable directory in the worker's environment
+before starting it. This supports setups such as a source-built Termux worker
+where `/tmp` is unavailable. An invalid configured directory fails before command
+execution instead of silently falling back. Private output directories/files and
+release cleanup retain their existing permissions and ownership.
+
+The release matrix does not produce Android binaries; the Linux artifacts do not
+replace the phone's existing source-build procedure.

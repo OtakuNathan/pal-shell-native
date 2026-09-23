@@ -7,6 +7,7 @@
 #include <system_error>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace dynabridge::pal_shell {
 // The manager owns these files until explicit result handoff/release or shutdown.
@@ -23,10 +24,14 @@ public:
     int out = -1, err = -1;
     std::string stdout_path, stderr_path;
     OutputFiles() {
-        char pattern[] = "/tmp/pal-native-shell-output-XXXXXX";
-        if (!mkdtemp(pattern)) throw std::system_error(errno, std::generic_category(), "output directory");
+        const char* tmpdir = ::getenv("TMPDIR");
+        std::string base = (tmpdir && *tmpdir) ? std::string(tmpdir) : std::string("/tmp");
+        std::string pattern_str = base + "/pal-native-shell-output-XXXXXX";
+        std::vector<char> pattern(pattern_str.begin(), pattern_str.end());
+        pattern.push_back('\0');
+        if (!mkdtemp(pattern.data())) throw std::system_error(errno, std::generic_category(), "output directory");
         try {
-            directory_ = pattern;
+            directory_ = pattern.data();
             stdout_path = directory_ + "/stdout";
             stderr_path = directory_ + "/stderr";
             out = open(stdout_path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);

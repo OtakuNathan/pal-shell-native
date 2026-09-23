@@ -15,6 +15,16 @@
 - cwd expands ~ on the execution endpoint: Pal's home for local commands and the
   worker's home for remote commands, including privileged command preparation.
 
+This reissued 0.4.1 also includes the POSIX TMPDIR compatibility fix used by the
+user's phone worker: output files use a nonempty TMPDIR, falling back to /tmp only
+when unset or empty. An unusable configured directory fails before spawning the
+command; file privacy and cleanup are unchanged. This helps environments with a
+nonstandard temporary directory, such as Termux. Android binaries are not part of
+the release matrix; update phone builds from source using the existing setup.
+
+This intentionally replaces the first 0.4.1 artifacts. Identify the reissue by its
+Git tag commit and SHA256SUMS, not the version string alone.
+
 Activation: install the 0.4.1 native wheel and plugin-remote-0.4.1.palpkg on the
 Pal host, and update remote worker bundles to 0.4.1 for remote cwd expansion.
 Coordinate active sessions and retained output before replacing loaded code or

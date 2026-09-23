@@ -1,10 +1,12 @@
 """Installed-wheel acceptance tests; deliberately independent of Pal."""
 from pathlib import Path
 import itertools
+import os
 import queue
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import _pal_shell_runtime as native
 
@@ -49,6 +51,45 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.call('release_output', event['output_id'])['status'], 'output_released')
         self.assertFalse(path.exists())
+
+    def test_output_respects_tmpdir_and_cleans_up_private_files(self):
+        with tempfile.TemporaryDirectory(prefix='pal output space ') as directory:
+            with patch.dict(os.environ, {'TMPDIR': directory + '/'}):
+                event = self.run_shell('printf custom-temp', budget=0)
+            self.assertEqual(event['status'], 'exited', event)
+            path = Path(event['stdout_path'])
+            self.assertEqual(path.parent.parent.resolve(), Path(directory).resolve())
+            self.assertEqual(path.read_bytes(), b'custom-temp')
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.call('release_output', event['output_id'])
+            self.assertFalse(path.parent.exists())
+
+    def test_empty_or_unset_tmpdir_keeps_posix_default(self):
+        for value in (None, ''):
+            with self.subTest(value=value), patch.dict(os.environ):
+                if value is None:
+                    os.environ.pop('TMPDIR', None)
+                else:
+                    os.environ['TMPDIR'] = value
+                event = self.run_shell('printf default-temp', budget=0)
+                self.assertEqual(event['status'], 'exited', event)
+                path = Path(event['stdout_path'])
+                self.assertEqual(path.parent.parent.resolve(), Path('/tmp').resolve())
+                self.call('release_output', event['output_id'])
+                self.assertFalse(path.parent.exists())
+
+    def test_invalid_tmpdir_fails_before_command_without_fallback(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'executed'
+            with patch.dict(os.environ, {'TMPDIR': str(Path(directory) / 'missing')}):
+                event = self.run_shell(f'touch {shlex.quote(str(marker))}')
+            self.assertEqual(event['status'], 'failed', event)
+            self.assertIn('output directory', event['error'])
+            self.assertFalse(event['stdout_path'])
+            self.assertFalse(marker.exists())
+            self.call('release_output', event['output_id'])
 
     def test_background_handoff_and_read(self):
         event = self.run_shell('sleep 0.2; printf done', wait=0)
