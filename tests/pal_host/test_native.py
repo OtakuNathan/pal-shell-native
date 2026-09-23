@@ -368,10 +368,11 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(runtime.close)
 
     async def test_close_cancels_foreground_and_removes_output_files(self):
-        before = set(Path("/tmp").glob("pal-native-shell-output-*"))
+        output_root = Path(os.environ.get("TMPDIR") or "/tmp")
+        before = set(output_root.glob("pal-native-shell-output-*"))
         task = asyncio.create_task(self.runtime.run("printf partial; sleep 60"))
-        await until(lambda: bool(set(Path("/tmp").glob("pal-native-shell-output-*")) - before))
-        created = set(Path("/tmp").glob("pal-native-shell-output-*")) - before
+        await until(lambda: bool(set(output_root.glob("pal-native-shell-output-*")) - before))
+        created = set(output_root.glob("pal-native-shell-output-*")) - before
         await asyncio.wait_for(self.runtime.close(), 5)
         with self.assertRaises(asyncio.CancelledError):
             await task
