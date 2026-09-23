@@ -6,6 +6,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import itertools
+import os
 from pathlib import Path
 import threading
 import weakref
@@ -130,7 +131,7 @@ class ShellRuntime:
         result = None
         try:
             result = await self._request(
-                "run", shell, cmd, cwd, tty,
+                "run", shell, cmd, os.path.expanduser(cwd), tty,
                 (1000 if tty else 300000) if wait_ms is None else wait_ms,
                 0 if timeout_ms is None else timeout_ms, inline_limit, turn=turn_id,
             )

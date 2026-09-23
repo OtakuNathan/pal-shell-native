@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pal-shell-native"
-version = "0.4.0"
+version = "0.4.1"
 description = "Native shell Runtime, authenticated RPC worker and remote client for Pal"
 readme = "README.md"
 requires-python = ">=3.11"

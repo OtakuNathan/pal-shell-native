@@ -61,7 +61,9 @@ REMOTE_RUN_GUIDANCE = RUN_GUIDANCE.model_copy(update={
         "When the task already requires remote execution and the user has not specified a connection method, "
         "prefer run_shell(target=...) for configured targets. Use list_remote if the target mapping is unknown. "
         "The task determines the execution location; configured remotes do not change the local default. "
-        "Honor an explicit request for SSH. "
+        "Honor an explicit request for SSH. If a newly reachable SSH host is not a configured remote target, "
+        "offer to enroll it after obtaining the user's consent; use skill_search/skill_inject for pal.remote.setup. "
+        "SSH success alone is neither remote enrollment nor permission to install a worker or edit target configuration. "
     ) + RUN_GUIDANCE.use_when + (
         " On Linux remote targets, sudo=true supports only apt/apt-get update or apt/apt-get install PACKAGE... "
         "without extra flags or shell operators; each requires approval. Inspect list_remote for configured management support."
@@ -72,6 +74,7 @@ REMOTE_RUN_GUIDANCE = RUN_GUIDANCE.model_copy(update={
     ),
     "failure_next_steps": RUN_GUIDANCE.failure_next_steps,
     "next_tool_hints": RUN_GUIDANCE.next_tool_hints + (
+        NextToolHint(name="search_tools", use_when="With user consent, discover skill_search/skill_inject and use pal.remote.setup to enroll a newly reachable SSH host as a remote target."),
         NextToolHint(name="list_remote", use_when="The task needs remote execution and the configured target ID is unknown."),
         NextToolHint(name="shell_status", use_when="A shell is blocked or retained output/completion needs diagnosis."),
     ),

@@ -347,7 +347,7 @@ class Worker:
         try:
             args = op.args
             if op.method == 'submit':
-                result = await self._native('run_limited', self.config.shell, args['cmd'], args.get('cwd', ''),
+                result = await self._native('run_limited', self.config.shell, args['cmd'], os.path.expanduser(args.get('cwd', '')),
                     args.get('tty', False), args['wait_ms'], args.get('timeout_ms') or 0, 0, self.config.output_limit)
                 if result.get('output_id'):
                     self.native_owners[result['output_id']] = op.operation_id

@@ -12,7 +12,9 @@ Its availability does not prove that this Pal process supports remote execution.
 
 ## Establish the host and authorized scope
 
-Reuse known configuration and authorization. Ask only for missing connection
+A newly reachable SSH host is not automatically a remote target. Offer enrollment
+when useful and obtain the user's agreement before installing a worker or changing
+target configuration. Reuse known configuration and authorization. Ask only for missing connection
 details: SSH destination/account/port, available key reference, target purpose,
 and whether the user wants an isolated test or a persistent user service. Inspect
 existing SSH configuration before asking the user to repeat it. Never ask them to
@@ -38,7 +40,7 @@ package, execution:extensions port, and remote plugin discovery.
 The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
 it is not built into Pal. Install the matching native wheel in the host interpreter,
 then use package_install (or pal package install for offline preparation) with
-plugin-remote-0.4.0.palpkg. If the runtime still contains the retired managed
+plugin-remote-0.4.1.palpkg. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
 packages/previous/builtin/remote and restores it on publication failure. Do not
@@ -157,6 +159,9 @@ by an installer. Remote defaults to enabled when native execution is available;
 missing/empty remote.toml attaches with no remote targets or Hub process. Existing
 explicit disable preferences are preserved. After adding target configuration,
 reload the enabled plugin rather than requiring an extra enable step.
+An optional unique shortcut in each target configuration creates run_shell_<shortcut>
+with that target fixed; omit it when no shortcut is needed. Shortcuts are compiled
+at plugin activation, so changing one requires a coordinated plugin reload.
 Configuration edits alone do not reload the Hub. Coordinate any
 existing sessions and pending output before reload; detach does not kill remote
 tasks or erase their resident tickets. Do not reset away unresolved execution.
@@ -164,7 +169,9 @@ tasks or erase their resident tickets. Do not reset away unresolved execution.
 ## Verify and hand off
 
 Refresh list_remote and verify the intended target, OS/architecture, actual shell,
-capacity and supported management operations. Run a harmless command through
+capacity and supported management operations. cwd expands ~ using the executing
+worker account's home (the local process account for target 0); it does not use
+the SSH client's home or expand environment variables. Run a harmless command through
 run_shell(target=...), checking execution identity and remote cwd. Explain that
 local file tools do not edit remote files; record the exact remote checkout and
 how local uncommitted changes were transferred before claiming remote test results.
@@ -174,7 +181,9 @@ same Runtime; verify the original session/output is accessible. A lost submissio
 acknowledgment is uncertain and the host queries the original operation; never submit a fresh command to recover its result.
 Check a PTY when supported, output paging/recovery, completion delivery and output
 release. Worker restart changes Runtime identity and is not connection recovery.
-Avoid fault injection against unrelated live tasks.
+An idle worker can restart and reconnect within its own slot without reloading
+the Hub or local shell. Old UNKNOWN operations still block that target; other
+targets and local execution remain independent. Avoid fault injection against unrelated live tasks.
 
 Report separately: files installed, worker running identity, user-service/autostart
 state, Pal configuration and plugin activation, verified behavior, and unsupported

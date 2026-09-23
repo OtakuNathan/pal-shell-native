@@ -100,6 +100,7 @@ async def handle_privileged(worker, method, args):
         if action == 'sudo':
             text(params.get('cmd'), 'cmd', limit=32768)
             text(params.get('cwd', ''), 'cwd', empty=True)
+            params['cwd'] = os.path.expanduser(params.get('cwd', ''))
             integer(params.get('wait_ms', 300000), 'wait_ms', 0, 300000)
             integer(params.get('timeout_ms') or 0, 'timeout_ms')
             if not sys.platform.startswith('linux') and not (trusted_executable(worker.config.privilege_helper) and trusted_executable(worker.config.askpass_helper)):

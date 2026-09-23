@@ -76,7 +76,9 @@ jobs:
         env:
           PYTHONPATH: pal_plugin:tests/pal_host_support
       - name: Slot admission and cancellation through multiplexed RPC
-        run: python tests/test_remote_admission.py -v
+        run: |
+          python tests/test_remote_admission.py -v
+          python -m unittest discover -s tests -p test_execution_gate.py -v
         env:
           PYTHONPATH: pal_plugin
       - name: GIL lifetime regression

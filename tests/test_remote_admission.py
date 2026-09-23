@@ -114,6 +114,7 @@ class SlotQueueTests(unittest.IsolatedAsyncioTestCase):
         self.releases[0].set()
         self.assertEqual((await self.slot.request('metadata', {}))['worker_id'], 'worker')
         self.assertNotIn('cancelled', self.worker.operations)
+        self.assertFalse(self.slot.execution.operations)
 
     async def test_timeout_and_queue_limit_are_known_not_started(self):
         await self.saturated()
@@ -121,8 +122,8 @@ class SlotQueueTests(unittest.IsolatedAsyncioTestCase):
         self.slot.admission.queue_limit = 1
         queued = self.task('submit', {'operation_id':'expired','cmd':'printf expired','wait_ms':0})
         await self.queued()
-        reply = await self.hub.call('request', {'target':1,'method':'submit',
-            'params':{'operation_id':'overflow','cmd':'printf overflow','wait_ms':0}})
+        reply = await self.hub.call('request', {'target':1,'method':'metadata',
+            'params':{}})
         self.assertEqual(reply['error']['code'], 'transport_capacity')
         self.assertEqual(reply['error']['effect'], 'not_started')
         with self.assertRaises(RemoteError) as error:

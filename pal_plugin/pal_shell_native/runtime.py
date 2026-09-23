@@ -21,7 +21,6 @@ from .recovery import retry_read, LOGGER
 
 REMOTE_PENDING_BYTES = 64 * 1024 * 1024
 
-NATIVE_TOOLS = frozenset({"run_shell", "shell_session", "shell_status", "list_remote", "remote_start", "remote_power", "run_shell_desktop"})
 
 
 def native_action(record):
@@ -75,10 +74,14 @@ class NativeShellOwner:
 
     @property
     def completion_blocked(self):
+        return self.completion_blocked_for(None)
+
+    def completion_blocked_for(self, target):
         return bool(any(not s.get('terminal_delivered') and not s.get('output_failure_reported') and
                         s.get('watching', True)
-                        for s in self.sessions.values()) or any(not p.delivered for p in self.pending.values())
-                    or (self._shell is not None and self._shell._foreground))
+                        for s in self.sessions.values() if target is None or s.get('target', 0) == target)
+                    or any(not p.delivered for p in self.pending.values() if target is None or p.result.get('target', 0) == target)
+                    or (target in (None, 0) and self._shell is not None and self._shell._foreground))
 
     @property
     def has_work(self):
@@ -272,8 +275,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
         self._owns_shell = owner is None
 
     def build_introspection_provider(self):
-        from .capabilities import NativeExecutionProvider
-        return NativeExecutionProvider(runtime=self)
+        from .capabilities import build_provider
+        return build_provider(self)
 
     def build_runtime_state_port(self):
         from .state import NativeExecutionStatePort
@@ -386,12 +389,13 @@ class NativeExecutionRuntime(ExecutionRuntime):
         try:
             if record.execution.effect_kind.value in READ_EFFECTS or (native_action(record) and native_action(record) != "run"):
                 return await super()._call_record_async(*arguments)
+            target = record.binding.descriptor.metadata.get('native_shell_target', getattr(validated, 'target', 0))
+            if native_action(record) == 'run' and target != 0:
+                return await super()._call_record_async(*arguments)
             async with self.shell_owner.write_scope():
-                if self.shell_owner._shell is not None and self.shell_owner._shell.execution_work:
-                    raise ShellRejected("write_busy: previous shell execution is running or its outcome is still unknown")
                 if native_action(record) == "run":
                     return await super()._call_record_async(*arguments)
-                if self.shell_owner.require_output_delivery and self.shell_owner.completion_blocked:
+                if self.shell_owner.require_output_delivery and self.shell_owner.completion_blocked_for(0):
                     raise ShellRejected("write_busy: shell results are not ready yet; continue when their execution result is available")
                 if record.binding.descriptor.metadata.get("delegates_execution"):
                     # This compound tool invokes run_shell itself. Keep host
@@ -438,7 +442,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                 details['blocking_sessions'] = [
                     {'session_id': key, 'status': item.get('latest_status', 'running'),
                      'watching': item.get('watching', True)}
-                    for key, item in self.shell_owner.sessions.items()]
+                    for key, item in self.shell_owner.sessions.items() if item.get('target', 0) == 0]
                 if not details['blocking_sessions'] and not hints:
                     hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'shell_status', 'args': {}},
                         reason='The blocking resource is not identified in this result.'))

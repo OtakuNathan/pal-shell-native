@@ -32,8 +32,8 @@ class Target:
     def __post_init__(self):
         if type(self.target) is not int or self.target <= 0:
             raise ValueError('Remote targets must be positive integers; zero is always local')
-        if self.shortcut not in {'', 'desktop'}:
-            raise ValueError('Unknown target shortcut')
+        if self.shortcut and not re.fullmatch(r'[A-Za-z0-9_-]{1,54}', self.shortcut):
+            raise ValueError('Shortcut must be 1–54 letters, digits, underscores or hyphens')
         if type(self.ssh_port) is not int or not 1 <= self.ssh_port <= 65535:
             raise ValueError('Invalid SSH port')
         if self.ssh_host:
@@ -63,6 +63,10 @@ class RemoteSlot:
         self.executor = executor or Executor()
         self.owns_executor = executor is None
         self.connection = None
+        from .execution_gate import ExecutionGate
+        self.execution = ExecutionGate(config.target)
+        self.previous_epoch = None
+        self.session_locks = {}
         self.config = config
         self.lock = asyncio.Lock()
         self.admission = RequestAdmission()
@@ -118,20 +122,79 @@ class RemoteSlot:
                         raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; inspect configured identity and host enrollment')
                     await asyncio.sleep(.05)
         connection = Connection(path, client_id=c.client_id, private_key=load_private_key(c.client_key),
-                                worker_id=c.worker_id, epoch=self.epoch, executor=self.executor)
+                                worker_id=c.worker_id, executor=self.executor)
         try:
             await connection.connect()
         except BaseException:
             await connection.close()
             raise
         self.connection = connection
+        if self.epoch and self.epoch != connection.epoch:
+            self.previous_epoch = self.epoch
+            self.cached = None
+            for item in self.execution.operations.values():
+                if item.get('epoch') == self.epoch:
+                    item['state'] = 'unknown'
         self.epoch = connection.epoch
         self.lease = FdLease('remote_rpc', connection, capacity=32, closer_async=close_connection,
                              hard_closer_async=close_connection, close_drain_timeout=5)
 
     async def request(self, method, params, epoch=None):
-        async with self.admission.permit():
-            return await self._request(method, params, epoch)
+        params = dict(params)
+        hold = params.pop('_hold_output', False)
+        oid = params.get('operation_id', '')
+        claim = method in {'submit', 'prepare_privileged'}
+        if claim:
+            self.execution.claim(oid, epoch or self.epoch, hold)
+            if method == 'prepare_privileged':
+                self.execution.operations[oid]['unsigned'] = True
+        if method == 'commit_privileged' and oid in self.execution.operations:
+            self.execution.operations[oid]['unsigned'] = False
+        lock = None
+        if method == 'session' and params.get('action') not in {'read', 'release', 'terminate'}:
+            if any(item['state'] == 'unknown' for item in self.execution.operations.values()):
+                raise RemoteError('target_busy', 'Reconcile unknown target operations before another session mutation')
+        if method == 'session' and params.get('action') != 'read':
+            lock = self.session_locks.setdefault((epoch, params['session_id']), asyncio.Lock())
+            if lock.locked():
+                raise RemoteError('target_busy', f'Target {self.config.target} session control is busy')
+            await lock.acquire()
+        control = method == 'session' and params.get('action') not in {'read', 'release'}
+        if control:
+            self.execution.operations[oid] = dict(operation_id=oid, epoch=epoch, state='submitting',
+                session_id=params['session_id'], output_id='', hold_output=False, control=True)
+        admitted = False
+        try:
+            async with self.admission.permit():
+                admitted = True
+                result = await self._request(method, params, epoch)
+            if method == 'prepare_privileged' and oid in self.execution.operations:
+                self.execution.operations[oid]['state'] = 'awaiting_approval'
+            self.execution.result(oid, result, epoch or self.epoch)
+            if method == 'query' and result.get('state') == 'approval_required':
+                self.execution.operations.pop(oid, None)
+            if control and result.get('state') == 'complete' and not result.get('error'):
+                self.execution.operations.pop(oid, None)
+            if method in {'session', 'observe'}:
+                self.execution.snapshot(result.get('result') or result, epoch or self.epoch)
+            if method == 'events':
+                for event in result.get('events', ()):
+                    self.execution.snapshot(event['result'], epoch or self.epoch)
+            if method == 'release':
+                self.execution.release(params['output_id'], epoch or self.epoch)
+            return result
+        except RemoteError as exc:
+            if claim or control or method == 'commit_privileged':
+                self.execution.failed(oid, exc.effect)
+            raise
+        except BaseException:
+            if claim or control or method == 'commit_privileged':
+                self.execution.failed(oid, 'unknown' if admitted else 'not_started')
+            raise
+        finally:
+            if lock is not None:
+                lock.release()
+                self.session_locks.pop((epoch, params['session_id']), None)
 
     async def _request(self, method, params, epoch=None):
         async with self.lock:
@@ -197,6 +260,7 @@ class RemoteSlot:
                                            ('' if shutdown else 'Shutdown is not supported by this target'),
                                  'observed_at': (self.cached or {}).get('observed_at')},
                 },
+                'execution': self.execution.status(), 'runtime_changed': self.previous_epoch is not None,
                 'expected_offline': self.expected_offline, 'start_actions': list(self.config.start_actions),
                 'needs_wake': self.expected_offline or (reachable is False and bool(self.config.start_actions))}
 

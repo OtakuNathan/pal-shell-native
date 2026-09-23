@@ -15,7 +15,7 @@ from .guidance import RUN_GUIDANCE, SESSION_GUIDANCE, REMOTE_RUN_GUIDANCE, RESID
 
 class RunInput(StrictToolModel):
     cmd: str = Field(min_length=1)
-    cwd: str = ""
+    cwd: str = Field(default="", description="Working directory on the execution target; ~ expands to that account’s home.")
     tty: bool = False
     wait_ms: int | None = Field(default=None, ge=0, le=300000)
     timeout_ms: int | None = Field(default=None, ge=1, le=2147483647)

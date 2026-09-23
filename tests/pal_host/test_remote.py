@@ -79,6 +79,129 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, tool_name, **args):
         return await self.runtime.execute_tool_async(new_tool_call(name=tool_name, args=args), turn_id='origin')
 
+
+
+
+    async def test_malformed_metadata_never_creates_unknown_execution(self):
+        original = self.port.request
+        async def malformed(target, method, params, epoch=None):
+            if method == 'metadata':
+                return {}
+            return await original(target, method, params, epoch)
+        self.port.request = malformed
+        result = await self.tool('run_shell', target=1, cmd='printf must-not-run')
+        self.assertFalse(result.ok)
+        self.assertIn('not_started', result.llm_text)
+        self.assertFalse(self.owner.shell.operations)
+        self.assertFalse(self.worker.operations)
+        self.assertFalse(self.hub.slots[1].execution.status()['blocked'])
+
+    async def test_unknown_claim_survives_hub_and_worker_replacement_only_blocks_its_target(self):
+        slot = self.hub.slots[1]
+        original = slot._request
+        async def lose(method, params, epoch=None):
+            if method == 'submit':
+                raise RemoteError('transport_lost', 'unconfirmed submission', effect='unknown')
+            return await original(method, params, epoch)
+        slot._request = lose
+        with self.assertRaises(RemoteFailure):
+            await self.owner.shell.run('printf uncertain', target=1, turn_id='origin')
+        self.assertEqual(slot.execution.status()['reasons'], ['unknown'])
+        config = self.worker.config
+        await self.worker.close()
+        self.worker = await Worker(config).start()
+        self.owner.detach_remote(self.port)
+        await self.hub.close()
+        self.hub = RemoteHub([self.target])
+        self.port = DirectPort(self.hub)
+        self.owner.attach_remote(self.port)
+        # No status/list call is needed to reinstate the safety claim.
+        result = await self.tool('run_shell', target=1, cmd='printf must-not-replay')
+        self.assertFalse(result.ok)
+        self.assertIn('target_busy', result.llm_text)
+        self.assertFalse(self.worker.operations)
+        local = await self.tool('run_shell', cmd='printf independent')
+        self.assertTrue(local.ok, local.llm_text)
+
+    async def test_slow_output_from_one_target_does_not_block_other_target(self):
+        from dataclasses import replace
+        from pal_shell_remote.slot import RemoteSlot
+        second = await Worker(WorkerConfig('worker2', 'pal', self.worker.config.client_public_key,
+                                           self.path/'worker2.sock')).start()
+        pending = None
+        release = asyncio.Event()
+        try:
+            self.hub.slots[2] = RemoteSlot(replace(self.target, target=2, worker_id='worker2',
+                socket_path=str(self.path/'worker2.sock'), shortcut=''), self.hub.executor)
+            shell = self.owner.shell
+            raw1 = await shell.run('printf first', target=1, load_output=False)
+            raw2 = await shell.run('printf second', target=2, load_output=False)
+            entered = asyncio.Event()
+            original = self.port.request
+            async def slow(target, method, params, epoch=None):
+                if target == 1 and method == 'output':
+                    entered.set()
+                    await release.wait()
+                return await original(target, method, params, epoch)
+            self.port.request = slow
+            pending = asyncio.create_task(shell.materialize(raw1))
+            await asyncio.wait_for(entered.wait(), 3)
+            loaded = await asyncio.wait_for(shell.materialize(raw2), 3)
+            self.assertEqual(loaded['stdout'], 'second')
+            release.set()
+            await pending
+            await shell.release_output(raw1)
+            await shell.release_output(raw2)
+        finally:
+            release.set()
+            if pending:
+                await asyncio.gather(pending, return_exceptions=True)
+            await second.close()
+
+    async def test_cwd_home_expands_at_execution_endpoint(self):
+        import os
+        from unittest.mock import patch
+        for target in (0, 1):
+            home = self.path / f'home-{target}'
+            (home / 'workspace').mkdir(parents=True)
+            with patch.dict(os.environ, {'HOME': str(home)}):
+                result = await self.tool('run_shell', target=target, cwd='~/workspace', cmd='pwd')
+            self.assertTrue(result.ok, result.llm_text)
+            self.assertIn(str(home / 'workspace'), result.llm_text)
+
+    async def test_remote_running_target_does_not_block_local_or_other_slot(self):
+        from dataclasses import replace
+        from pal_shell_remote.slot import RemoteSlot
+        second = await Worker(WorkerConfig('worker2', 'pal', self.worker.config.client_public_key,
+                                           self.path/'worker2.sock')).start()
+        try:
+            self.hub.slots[2] = RemoteSlot(replace(self.target, target=2, worker_id='worker2',
+                socket_path=str(self.path/'worker2.sock'), shortcut=''), self.hub.executor)
+            started = await self.tool('run_shell', target=1, cmd='sleep 30', wait_ms=0)
+            self.assertTrue(started.ok, started.llm_text)
+            busy = await self.tool('run_shell', target=1, cmd='printf should-not-run')
+            self.assertFalse(busy.ok)
+            self.assertIn('target_busy', busy.llm_text)
+            for target in (0, 2):
+                result = await self.tool('run_shell', target=target, cmd='printf independent')
+                self.assertTrue(result.ok, result.llm_text)
+            stopped = await self.tool('call_tool', name='shell_session', args={'session_id': started.structured['session_id'], 'action': 'terminate'})
+            self.assertTrue(stopped.ok, stopped.llm_text)
+        finally:
+            await second.close()
+
+    async def test_idle_worker_restart_reconnects_without_replacing_hub(self):
+        first = await self.tool('run_shell', target=1, cmd='printf before')
+        self.assertTrue(first.ok, first.llm_text)
+        old_epoch = self.worker.epoch
+        config = self.worker.config
+        await self.worker.close()
+        self.worker = await Worker(config).start()
+        result = await self.tool('run_shell', target=1, cmd='printf after')
+        self.assertTrue(result.ok, result.llm_text)
+        self.assertNotEqual(old_epoch, self.hub.slots[1].epoch)
+        self.assertIs(self.owner.remote_port, self.port)
+
     async def test_output_download_resumes_validated_prefix_after_failure(self):
         shell = self.owner.shell
         raw = await shell.run('head -c 700000 /dev/zero', target=1,
@@ -520,13 +643,28 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model_calls), 1)
         self.assertFalse(self.owner.shell.remote_work)
 
-    async def test_desktop_projection_cannot_change_target(self):
+    async def test_configured_projection_cannot_change_target(self):
         from dataclasses import replace
-        self.hub.slots[1].config = replace(self.target, shortcut='desktop')
-        result = await self.tool('run_shell_desktop', cmd='printf desktop')
+        import json
+        from dataclasses import asdict
+        (self.path/'config').mkdir()
+        config = asdict(replace(self.target, shortcut='cloud'))
+        config.pop('static')
+        config.pop('start_actions')
+        (self.path/'config/remote.toml').write_text('[[targets]]\n' + '\n'.join(
+            f'{key} = {json.dumps(value)}' for key, value in config.items()))
+        await self.runtime.shutdown_async()
+        self.core.close()
+        self.runtime = NativeExecutionRuntime(runtime_root=self.path)
+        self.core = PalCore(context=MainContext(execution_runtime=self.runtime))
+        register_with_core(self.core.context)
+        self.core.publish_module_capabilities('execution')
+        self.owner = self.runtime.shell_owner
+        self.owner.attach_remote(self.port)
+        result = await self.tool('run_shell_cloud', cmd='printf desktop')
         self.assertTrue(result.ok, result.text)
         self.assertEqual(result.structured['target'], 1)
-        invalid = await self.tool('run_shell_desktop', cmd='printf bypass', target=0)
+        invalid = await self.tool('run_shell_cloud', cmd='printf bypass', target=0)
         self.assertFalse(invalid.ok)
 
     async def test_reset_does_not_drop_remote_ticket(self):

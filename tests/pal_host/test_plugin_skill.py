@@ -62,7 +62,7 @@ class NativeSkillTests(unittest.TestCase):
                     self.assertEqual(result.structured['hits'][0]['skill_id'], 'pal.remote.setup')
                     advice = asyncio.run(behavior.advise_async(BehaviorAdviceRequest(scenario=query, top_k=5)))
                     self.assertTrue(any('pal.remote.setup' in item.skill_refs for item in advice.candidates))
-                self.assertIn('plugin-remote-0.4.0.palpkg', service.inject_skill('pal.remote.setup').manual_text)
+                self.assertIn('plugin-remote-0.4.1.palpkg', service.inject_skill('pal.remote.setup').manual_text)
                 core.withdraw_module_capabilities('remote')
                 self.assertIsNone(service.inject_skill('pal.remote.setup'))
             finally:

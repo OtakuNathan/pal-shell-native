@@ -21,8 +21,9 @@ class RemoteHub:
         self.slots = {}
         if len({t.target for t in targets}) != len(targets):
             raise ValueError('Duplicate remote target')
-        if sum(t.shortcut == 'desktop' for t in targets) > 1:
-            raise ValueError('Only one target may bind the desktop shortcut')
+        shortcuts = [t.shortcut for t in targets if t.shortcut]
+        if len(shortcuts) != len(set(shortcuts)):
+            raise ValueError('Target shortcuts must be unique')
         self.executor = Executor() if targets else None
         for config in targets:
             if config.target in self.slots:
@@ -42,7 +43,13 @@ class RemoteHub:
                 slot = self.slots.get(params.get('target'))
                 if slot is None:
                     raise RemoteError('invalid_target', 'Target is not configured')
-                if method == 'start':
+                if method == 'restore_execution':
+                    slot.execution.restore(params['records'])
+                    result = slot.execution.status()
+                elif method == 'cancel_prepared':
+                    slot.execution.cancel_prepared(params['operation_id'])
+                    result = slot.execution.status()
+                elif method == 'start':
                     result = await slot.start(params.get('action'))
                 elif method == 'approve':
                     from pal_shell_worker.client import load_private_key

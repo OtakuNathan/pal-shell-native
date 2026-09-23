@@ -116,6 +116,12 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         # PowerShell returns the long path (runneradmin) for the same directory.
         self.assertTrue(Path(reply['data'].decode('utf-8')).samefile(directory))
 
+    async def test_home_working_directory(self):
+        result = await self.run_command('[Console]::Write((Get-Location).Path)', cwd='~')
+        self.assertEqual(result['returncode'], 0)
+        reply = await self.worker.handle('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+        self.assertTrue(Path(reply['data'].decode('utf-8')).samefile(Path.home()))
+
     async def test_bounded_output_and_timeout(self):
         result = await self.run_command("[Console]::Write('x'*100000)")
         self.assertTrue(result['truncated'])

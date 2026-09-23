@@ -46,13 +46,20 @@ must not share ownership. Private keys never appear in tool parameters or result
   command. The action's exit code does not prove the machine or worker is ready.
 - `remote_power(target, action="shutdown")`: a separate management action; not
   plugin detach, transport close or session termination. Requires one trusted approval for each shutdown request.
-- `run_shell_desktop(...)`: fixed projection of the unique configured desktop
-  target. It cannot accept an overriding target. Canonical action metadata, rather
+- `run_shell_<shortcut>(...)`: fixed projection generated from each configured
+  nonempty, unique `shortcut` (for example desktop, cloud or macos).
+  Shortcuts allow 1–54 letters, digits, underscores or hyphens and are compiled
+  at plugin activation; config edits require a coordinated plugin reload. It cannot accept an overriding target. Canonical action metadata, rather
   than exact public aliases, controls native handoff and write admission.
+
+The native run_shell guidance offers enrollment of newly reachable SSH hosts via
+`pal.remote.setup`, with user agreement before worker installation/configuration.
+SSH connectivity alone does not enroll a target.
 
 All command results identify their target. Paths belong to that target. Local file
 tools cannot access a remote checkout; use the target shell when no corresponding
-remote file capability exists. Workspace synchronization is outside this change.
+remote file capability exists. cwd expands ~ on the executing endpoint using its
+process account's home; it does not expand environment variables. Workspace synchronization is outside this change.
 
 Dynamic metadata includes OS/version, hardware and worker architecture, CPU
 model/cores/quota, memory and cgroup limit, load, optionally NVIDIA GPU memory,
@@ -81,8 +88,18 @@ access those tickets only on the same worker epoch. Old-generation replies canno
 establish ownership after detach. Reset refuses unresolved remote work.
 
 Worker restart creates a new epoch. Old session state cannot be recovered and
-previous command effects cannot be inferred. Unknown operations retain the write
-barrier; management queries remain available. This version deliberately has no
+previous command effects cannot be inferred. The slot reconnects to the new epoch
+without reattaching the Hub or touching local execution. Old tickets are fenced
+before reaching the new Runtime. Unknown operations retain that target's write
+barrier even after restart; management queries remain available.
+
+Local and remote execution admission are independent; each slot owns its running,
+submitting, approval and UNKNOWN claims. Busy targets reject immediately, without
+a new execution queue. Same-session mutations do not overlap; reads and reconciliation
+remain possible. Strict output-delivery scopes retain their target barrier until
+output acknowledgment. Host tickets restore these claims before a replacement Hub
+accepts new execution. Slow output transfers and completion polling on one target
+do not serialize other targets. This version deliberately has no
 force-forget operation for lost effects and no recovery across a Pal process
 restart. An operator must reconcile effects before replacing that resident state.
 
@@ -103,14 +120,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.4.0.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.4.1.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
 pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.4.0.palpkg --runtime-root <runtime-root>
+pal package install ../pal-shell-native/dist/plugin-remote-0.4.1.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform

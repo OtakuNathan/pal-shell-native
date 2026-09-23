@@ -61,6 +61,12 @@ class RemoteHubClient:
 
     def _attach(self):
         try:
+            if self.port.client and self.owner._shell is not None:
+                for target in {t.target for t in self.owner.shell.operations.values()}:
+                    reply = self.port.client.request_sync('restore_execution', {
+                        'target': target, 'records': self.owner.shell.execution_records(target)})
+                    if 'error' in reply:
+                        raise RuntimeError('Cannot restore retained remote execution admission')
             self.owner.attach_remote(self.port)
             return self.port
         except BaseException:

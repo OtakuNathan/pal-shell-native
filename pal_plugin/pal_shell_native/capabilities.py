@@ -29,7 +29,7 @@ class RemotePowerInput(StrictToolModel):
     action: Literal["shutdown"] = "shutdown"
 
 
-class DesktopRunInput(RunInput):
+class TargetRunInput(RunInput):
     sudo: bool = False
 
 
@@ -75,7 +75,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             owner.sessions[sid] = {
                 "origin_turn": turn_id, "budget": budget,
                 "binding": getattr(continuation, "delivery_binding", None),
-                "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")),
+                "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")), "target": result.get("target", 0),
             }
         return await owner.stage(call, result)
 
@@ -131,11 +131,20 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         owner = call.meta["execution_runtime"].shell_owner
         return self._result({"sessions": [
             {"session_id": sid, "cmd": item["cmd"], "watching": item.get("watching", True),
-             "last_observed_status": item.get("latest_status", "running")}
+             "last_observed_status": item.get("latest_status", "running"), "target": item.get("target", 0)}
             for sid, item in owner.sessions.items()]})
 
     async def shell_status_async(self, call):
-        return self.shell_status(call)
+        owner = call.meta['execution_runtime'].shell_owner
+        payload = self.shell_status(call).structured
+        targets = [{'target': 0, 'execution': {'blocked': owner.completion_blocked_for(0)}}]
+        if owner.remote_port:
+            if owner._shell:
+                for target in {t.target for t in owner.shell.operations.values()}:
+                    await owner.shell.sync_target(target)
+            targets.extend({'target': item['target'], 'execution': item.get('execution', {})}
+                           for item in await owner.remote_port.list(False))
+        return self._result({**payload, 'targets': targets})
 
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_list", aliases=("list_remote",),
@@ -195,29 +204,51 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         owner = call.meta["execution_runtime"].shell_owner
         return self._result(await owner.shell.privileged(call.args['target'], 'shutdown', turn_id=str(call.meta.get('turn_id') or '')))
 
-    @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="shell_desktop", aliases=("run_shell_desktop",),
-        InputModel=DesktopRunInput, OutputModel=StructuredToolOutput, execution=DIRECT_CONTROL,
-        async_handler_name="desktop_async", metadata={"background_execution": True, "preserve_role_contract": True, "native_shell_action": "run"}, guidance=ToolGuidance(
-            purpose="Run on the configured desktop target using the ordinary native shell contract.",
-            use_when="The configured desktop is the intended execution location.",
-            do_not_use_when="Another target is needed; use run_shell(target=...). This shortcut cannot override its target.",
-            failure_next_steps="Inspect list_remote. No configured desktop means rejection, never local fallback.",
-        ),
-    )
-    def desktop(self, call):
-        raise RuntimeError("Use asynchronous native shell")
-
-    async def desktop_async(self, call):
-        from dataclasses import replace
-        owner = call.meta['execution_runtime'].shell_owner
-        targets = await owner.shell._port().list(False)
-        desktops = [item['target'] for item in targets if item.get('shortcut') == 'desktop']
-        if len(desktops) != 1:
-            raise ToolRejectedError('Exactly one remote target must be configured with shortcut=desktop')
-        return await self.shell_async(replace(call, args={**call.args, 'target': desktops[0]}))
-
     @staticmethod
     def _result(payload):
         text = render_structured_for_llm(payload)
         return CapabilityResult(status=RuntimeStatus.OK, structured=payload, text=text, llm_text=text)
+
+
+def build_provider(runtime):
+    """Compile configured projections without extending Pal's alias semantics."""
+    import tomllib
+    from pathlib import Path
+    from dataclasses import replace
+    from pal_shell_remote.slot import Target
+    if runtime.runtime_root is None:
+        return NativeExecutionProvider(runtime=runtime)
+    path = Path(runtime.runtime_root) / 'config' / 'remote.toml'
+    targets = [Target(**item) for item in tomllib.loads(path.read_text()).get('targets', [])] if path.exists() else []
+    aliases = set()
+    ids = set()
+    methods = {}
+    for target in targets:
+        if target.target in ids:
+            raise ValueError('Duplicate remote target')
+        ids.add(target.target)
+        if not target.shortcut:
+            continue
+        alias = 'run_shell_' + target.shortcut
+        if alias in aliases:
+            raise ValueError('Target shortcuts must be unique')
+        aliases.add(alias)
+        name = 'shortcut_' + target.shortcut
+        async_name = name + '_async'
+        def sync(self, call):
+            raise RuntimeError('Use asynchronous native shell')
+        async def run(self, call, target_id=target.target):
+            return await self.shell_async(replace(call, args={**call.args, 'target': target_id}))
+        sync.__name__ = name
+        methods[name] = capability_action(namespace='operation', scope='module', family='exec',
+            action_name=name, aliases=(alias,), InputModel=TargetRunInput,
+            OutputModel=StructuredToolOutput, execution=DIRECT_CONTROL,
+            async_handler_name=async_name,
+            metadata={'background_execution': True, 'preserve_role_contract': True,
+                      'native_shell_action': 'run', 'native_shell_target': target.target},
+            guidance=REMOTE_RUN_GUIDANCE.model_copy(update={
+                'purpose': f'Run on configured target {target.target} ({target.name}). The target is fixed.',
+            }))(sync)
+        methods[async_name] = run
+    provider_type = type('ConfiguredNativeExecutionProvider', (NativeExecutionProvider,), methods)
+    return provider_type(runtime=runtime)
