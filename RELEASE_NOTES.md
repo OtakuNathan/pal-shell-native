@@ -1,3 +1,19 @@
+0.4.2 names the owner in write admission rejections.
+
+- The native Runtime appends the active writer id to `write_busy` errors, so a
+  rejected write identifies the session or lease holding the context.
+- The host plugin reports its live session and pending-request ids when another
+  host write is active, pointing the caller at the blocking work directly.
+- No behavior, API or protocol changes: Native API 2 and remote protocol 3 are
+  unchanged. 0.4.1 peers interoperate; workers gain the detailed messages
+  after upgrading.
+- Activation: install the 0.4.2 native wheel and plugin-remote-0.4.2.palpkg on
+  the Pal host and update worker bundles to 0.4.2 as convenient.
+
+The verified Pal integration baseline remains
+3a75d38ffed0c992f110520647dc857bc3985666.
+Windows remains experimental and has no power or privilege management.
+
 0.4.1 isolates Native shell execution admission by target.
 
 - Local execution and each remote slot have independent execution barriers. A busy

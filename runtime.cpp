@@ -474,7 +474,8 @@ struct Runtime::Impl {
         maybe_shutdown();
     }
     void begin(const std::shared_ptr<Session>& s) {
-        if (writer) throw std::runtime_error("write_busy: a shell session or write operation owns this context");
+        if (writer) throw std::runtime_error("write_busy: a shell session or write operation owns this context (writer id "
+                                             + std::to_string(writer) + ")");
         while (completed.size() >= completed_capacity) {
             auto item = std::find_if(completed.begin(), completed.end(), [this](id_t id) {
                 return sessions.at(id)->result_delivered;
@@ -671,7 +672,8 @@ void Runtime::cancel_request(id_t request, id_t target) {
 }
 void Runtime::acquire_write(id_t request) {
     impl_->post(request, [=] {
-        if (impl_->writer) throw std::runtime_error("write_busy: shell session or write operation active");
+        if (impl_->writer) throw std::runtime_error("write_busy: shell session or write operation active (writer id "
+                                                    + std::to_string(impl_->writer) + ")");
         impl_->writer = next_id++;
         Event event; event.request = request; event.session = impl_->writer; event.status = "write_acquired";
         impl_->emit(std::move(event));

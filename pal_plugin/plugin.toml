@@ -1,6 +1,6 @@
 plugin_id = "remote"
 entrypoint = "pal_shell_native.plugin"
-version = "0.4.1"
+version = "0.4.2"
 enabled_by_default = true
 lifecycle_protocol = "raii.v1"
 module_id = "remote"

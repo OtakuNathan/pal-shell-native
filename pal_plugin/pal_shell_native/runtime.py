@@ -95,7 +95,9 @@ class NativeShellOwner:
         task = asyncio.current_task()
         previous = self.write_task
         if previous is not None and previous is not task:
-            raise ShellRejected("write_busy: another host write is active")
+            raise ShellRejected(
+                f"write_busy: another host write is active (sessions={sorted(self.sessions)}, "
+                f"pending={sorted(self.pending)})")
         self.write_task = task
         try:
             yield
