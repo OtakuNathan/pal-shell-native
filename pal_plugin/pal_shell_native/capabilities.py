@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from typing import Literal
-from pydantic import Field
+import asyncio
+from pydantic import Field, model_validator
 
 from pal.execution.capabilities import ExecutionIntrospectionProvider
 from pal.execution.contracts import CapabilityResult
@@ -58,7 +59,17 @@ def _target_summary(item):
     return summary
 
 
-NativeSessionInput = SessionInput
+class NativeSessionInput(SessionInput):
+    session_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    output_ref: str | None = Field(default=None, min_length=1, description="Retained output reference returned after an export failure; read retries export without running the command, release explicitly discards it.")
+
+    @model_validator(mode="after")
+    def validate_output_reference(self):
+        if (self.session_id is None) == (self.output_ref is None):
+            raise ValueError("Provide exactly one of session_id or output_ref")
+        if self.output_ref is not None and (self.action not in {"read", "release"} or self.wait_ms is not None):
+            raise ValueError("output_ref supports only read or release, without waiting")
+        return self
 
 
 STATUS_GUIDANCE = ToolGuidance(
@@ -86,23 +97,39 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         limit = execution._resolve_char_limit(budget) if budget is not None else None
         turn_id = str(call.meta.get("turn_id") or "")
         continuation = owner.core.state.active_turns.get(turn_id) if owner.core is not None else None
-        delivery_context = {"origin_turn": turn_id, "budget": budget, "binding": getattr(continuation, "delivery_binding", None),
+        lease_id = call.meta["tool_call"].call_id
+        owner.input_leases[lease_id] = (execution.result_snapshots, execution.result_snapshots.lease_request(turn_id))
+        delivery_context = {"input_lease_id": lease_id, "origin_turn": turn_id, "budget": budget, "binding": getattr(continuation, "delivery_binding", None),
                             "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty"))}
-        result = await owner.shell.run(**dict(call.args), turn_id=turn_id, delivery_context=delivery_context, retain_output=True, load_output=False,
-                                       inline_limit=-1 if limit is None else min(limit, 2147483647))
+        try:
+            result = await owner.shell.run(**dict(call.args), turn_id=turn_id, delivery_context=delivery_context, retain_output=True, load_output=False,
+                                           inline_limit=-1 if limit is None else min(limit, 2147483647))
+        except BaseException as exc:
+            from .adapter import ShellRejected
+            if (isinstance(exc, ShellRejected) or getattr(exc, "effect", "") == "not_started"
+                or isinstance(exc, asyncio.CancelledError) and not call.args.get("target", 0)):
+                # The local adapter reaps a cancelled submission before raising.
+                owner.release_input_lease(lease_id)
+            # Unknown remote outcomes retain their input lease until reconciliation
+            # or owner shutdown; a transport failure does not prove execution ended.
+            raise
         sid = result["session_id"]
         if sid:
             continuation = owner.core.state.active_turns.get(turn_id) if owner.core is not None else None
             owner.sessions[sid] = {
-                "origin_turn": turn_id, "budget": budget,
+                "input_lease_id": lease_id, "origin_turn": turn_id, "budget": budget,
                 "binding": getattr(continuation, "delivery_binding", None),
                 "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")), "target": result.get("target", 0),
             }
+        from .adapter import TERMINAL
+        if not sid or result["status"] in TERMINAL:
+            owner.release_input_lease(lease_id)
         return await owner.stage(call, result)
 
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="session", aliases=("shell_session",),
         InputModel=NativeSessionInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
+        examples=({"session_id": 1, "action": "read"},),
         async_handler_name="session_async", metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session"}, guidance=RESIDENT_SESSION_GUIDANCE,
     )
     def session(self, call):
@@ -111,6 +138,21 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
     async def session_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
         args = dict(call.args)
+        output_ref = args.pop("output_ref", None)
+        if output_ref is not None:
+            pending = owner.pending.get(output_ref)
+            if pending is None or not pending.delivered or not pending.failure:
+                raise ToolRejectedError("Retained output reference is unavailable", error_code="invalid_output_ref")
+            if args.get("action", "read") == "release":
+                await owner.shell.release_output(pending.result)
+                owner.pending.pop(output_ref, None)
+                owner.forget_session(pending.result.get("session_id", 0))
+                return self._result({"status": "released"})
+            return await owner.stage(call, pending.result, recovery_of=output_ref)
+        if args.get("action", "read") == "read":
+            for old_id, pending in tuple(owner.pending.items()):
+                if pending.delivered and pending.failure and pending.result.get("session_id") == args["session_id"]:
+                    return await owner.stage(call, pending.result, recovery_of=old_id)
         if args.get("action") == "release" and args["session_id"] >= 1 << 48:
             from .recovery import retry_read
             result = await retry_read(lambda: owner.shell.session_snapshot(**args),

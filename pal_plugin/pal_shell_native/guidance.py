@@ -6,8 +6,7 @@ RUN_GUIDANCE = ToolGuidance(
     purpose="Run a shell command; return its result or a retained session snapshot.",
     use_when=(
         "Execute commands, builds or tests. Prefer rg for repository text search and rg --files for file"
-        " enumeration; use alternatives only when rg is unavailable or unsuitable. Search saved output snapshots with rg; "
-        "use awk/sed and wc for bounded excerpts within unusually long lines that read_file cannot select. "
+        " enumeration; use alternatives only when rg is unavailable or unsuitable. Search saved output snapshots with rg. "
         "Output snapshot paths are local to the Pal host, including copies of remote output; inspect them locally (target=0 where available). "
         "Read the saved file rather than rerunning its producer. Run tests and builds"
         " directly to preserve full output. wait_ms controls response waiting (default five minutes,"

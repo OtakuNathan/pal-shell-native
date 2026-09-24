@@ -7,8 +7,6 @@ from pydantic import Field, model_validator
 
 from pal.execution.tool_facade import StrictToolModel, ToolAffordance
 
-from .adapter import TERMINAL
-
 
 from .guidance import RUN_GUIDANCE, SESSION_GUIDANCE, REMOTE_RUN_GUIDANCE, RESIDENT_SESSION_GUIDANCE
 
@@ -46,24 +44,22 @@ class SessionInput(StrictToolModel):
         return self
 
 
-def session_affordances(result: dict) -> list[ToolAffordance]:
-    sid = result.get("session_id", 0)
-    status = result.get("status")
-    if not sid or status in TERMINAL or status in {"released", "notification_retry_queued"}:
+def session_affordances(result: dict, *, output_ref: str = "") -> list[ToolAffordance]:
+    """Only failed output delivery warrants a recovery action.
+
+    Live state, PTY support, and a new session ID are facts, not reasons to
+    replay the session contract. Static controls remain in tool guidance.
+    """
+    if not result.get("output_error"):
         return []
-    actions = ["read (current status and output)"]
-    if status != "terminating":
-        if not result.get("has_wake", False):
-            actions.append("watch (one timed decision notification)")
-        if result.get("watching", True):
-            actions.append("unwatch (stop notifications without stopping execution)")
-        if result.get("remaining_ms") is not None and result["remaining_ms"] > 0:
-            actions.append("extend (extend the finite execution budget)")
-        if result.get("tty"):
-            actions.extend(("write (PTY input)", "resize (PTY dimensions)"))
-        actions.append("terminate (request cancellation)")
+    sid = result.get("session_id", 0)
+    if sid:
+        args = {"session_id": sid, "action": "read"}
+    elif output_ref:
+        args = {"output_ref": output_ref, "action": "read"}
+    else:
+        return []
     return [ToolAffordance(
-        tool="read_tool", arguments={"name": "shell_session"},
-        reason="shell_session supports: " + "; ".join(actions) + ". "
-               "The contract is available here if unknown; known actions are callable via call_tool.",
+        tool="call_tool", arguments={"name": "shell_session", "args": args},
+        reason="After resolving output storage/read failure, export the retained result without rerunning the command.",
     )]

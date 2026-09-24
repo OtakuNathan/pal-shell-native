@@ -66,8 +66,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(started.snapshot_refs)
             body = Path(started.snapshot_refs[0].path).read_text()
             sid = json.loads(body)["session_id"]
-            control = next(a for a in started.invocation_result.affordances if a.tool == "read_tool")
-            self.assertEqual(control.arguments, {"name": "shell_session"})
+            self.assertFalse(started.invocation_result.affordances)
             async def wait():
                 while not ready.exists():
                     await asyncio.sleep(.01)
@@ -79,15 +78,11 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.snapshot_refs)
             actions = result.invocation_result.affordances
             self.assertIn(result.snapshot_refs[0].path, result.llm_text)
-            session_hints = [a for a in actions if a.tool == "read_tool"]
-            self.assertEqual(len(session_hints), 1)
-            self.assertIn("terminate", session_hints[0].reason)
-            self.assertIn("read", session_hints[0].reason)
-            self.assertNotIn("PTY", session_hints[0].reason)
+            self.assertEqual(actions, [])
             stopped = await self.session(sid, "terminate")
             self.assertTrue(stopped.ok, stopped.text)
             if stopped.structured["status"] == "terminating":
-                self.assertEqual(len(stopped.invocation_result.affordances), 1)
+                self.assertFalse(stopped.invocation_result.affordances)
                 final = await self.session(sid, wait_ms=5000)
                 self.assertTrue(final.ok, final.text)
                 self.assertEqual(final.structured["status"], "cancelled")
@@ -95,7 +90,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
     async def test_interactive_input_and_resize_via_indirect_tool(self):
         started = await self.tool("prototype_run_shell", cmd="read -r line; printf 'received:%s' \"$line\"", tty=True, wait_ms=0)
         sid = started.structured["session_id"]
-        self.assertTrue(any(a.tool == "read_tool" for a in started.invocation_result.affordances))
+        self.assertFalse(started.invocation_result.affordances)
         resized = await self.session(sid, "resize", rows=32, columns=100)
         self.assertTrue(resized.ok, resized.text)
         written = await self.session(sid, "write", text="hello\n")
@@ -155,7 +150,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         call = new_tool_call(name="call_tool", args={"name": "shell_session", "args": {"session_id": sid}})
         budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
         result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="origin")
-        self.assertFalse(result.ok)
+        self.assertTrue(result.ok)
+        self.assertTrue(result.invocation_result.output_error)
         self.assertNotIn(sid, self.host.shell._consumed)
         path = Path(self.runtime.pending_outputs[call.call_id][2]["stdout_path"])
         self.assertTrue(path.exists())
@@ -288,7 +284,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError("pager unavailable")
             self.runtime.result_snapshots.capture = fail
             result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="retry")
-            self.assertFalse(result.ok)
+            self.assertTrue(result.ok)
+            self.assertTrue(result.invocation_result.output_error)
             output = self.runtime.pending_outputs[call.call_id][2]
             path = Path(output["stdout_path"])
             self.assertTrue(path.exists())

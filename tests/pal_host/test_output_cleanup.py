@@ -85,7 +85,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.owner.observations.acknowledge(event))
         self.assertEqual(self.shell.attempts, 5)
 
-    async def test_terminal_read_failure_is_abandoned_only_after_delivery(self):
+    async def test_terminal_read_failure_is_retained_after_error_delivery(self):
         loads = 0
         async def unavailable(raw):
             nonlocal loads
@@ -99,23 +99,25 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('output_error', result.structured)
         self.assertFalse(self.shell.started.is_set())
         await self.owner.commit('call')
-        await self.shell.started.wait()
+        await asyncio.sleep(0)
         self.assertTrue(self.owner.pending['call'].failure)
-        self.shell.gate.set()
-        await asyncio.gather(*tuple(self.owner.observations.acking.values()))
-        self.assertFalse(self.owner.pending)
+        self.assertTrue(self.owner.pending['call'].delivered)
+        self.assertEqual(self.shell.attempts, 0)
+        self.assertFalse(self.owner.observations.acking)
         self.assertFalse(self.owner.observations.covered)
 
-    async def test_output_capacity_failure_still_reaches_terminal_cleanup(self):
+    async def test_output_capacity_failure_does_not_release_original_output(self):
         call = SimpleNamespace(meta={'tool_call': SimpleNamespace(call_id='call'), 'turn_id': 'turn'})
         with patch('pal_shell_native.runtime.REMOTE_PENDING_BYTES', 0):
             result = await self.owner.stage(call, {**self.raw, 'stdout_total': 1})
         self.assertIn('output_error', result.structured)
         self.assertFalse(self.shell.started.is_set())
         await self.owner.commit('call')
-        self.shell.gate.set()
-        await asyncio.gather(*tuple(self.owner.observations.acking.values()))
-        self.assertFalse(self.owner.has_work)
+        await asyncio.sleep(0)
+        self.assertTrue(self.owner.pending['call'].delivered)
+        self.assertEqual(self.shell.attempts, 0)
+        self.assertTrue(self.owner.has_work)
+        self.assertFalse(self.owner.completion_blocked)
 
     async def test_permanent_error_does_not_retry(self):
         self.pending()

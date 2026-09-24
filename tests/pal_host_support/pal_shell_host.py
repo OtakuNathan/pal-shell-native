@@ -71,7 +71,7 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
 
     async def _invoke_tool_record_async(self, generation, call, **kwargs):
         result = await super()._invoke_tool_record_async(generation, call, **kwargs)
-        if isinstance(result, CompleteResult):
+        if isinstance(result, CompleteResult) and not result.output_error:
             await self.finish_output(call.call_id)
         return result
 
@@ -91,8 +91,8 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
             raw = output_result(await self.shell.materialize(output))
             self.pending_outputs[call_id] = call, raw, output
         record = self.registry_generation.record_for_alias(call.name)
-        result = self._normalize_invocation_result(record, call, raw, budget=budget, turn_id=turn_id)
-        if isinstance(result, CompleteResult):
+        result = self.deliver_invocation_result(record, call, raw, budget=budget, turn_id=turn_id)
+        if isinstance(result, CompleteResult) and not result.output_error:
             await self.finish_output(call_id)
         return self._canonical_result_from_invocation(call.name, call_id, result)
 
@@ -249,7 +249,7 @@ class PrototypeHost:
                 record = runtime.registry_generation.record_for_alias(call.name)
                 raw = ToolHandlerResult(output=payload, llm_text=text,
                                         effect_receipt=EffectReceipt(outcome=EffectOutcome.APPLIED, receipt={"native_output": loaded["output_id"]}))
-                paged = runtime._normalize_invocation_result(
+                paged = runtime.deliver_invocation_result(
                     record, call, raw, budget=self.shell.completion_budgets.get(sid, self.completion_budget), turn_id=turn)
                 if not isinstance(paged, CompleteResult):
                     raise RuntimeError(f"completion output validation failed: {paged!r}")

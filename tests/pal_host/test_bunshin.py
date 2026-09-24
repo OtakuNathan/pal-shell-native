@@ -167,7 +167,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         scope = BunshinScopedExecutionRuntime(self.runtime, ["op_file_write"], {"invocation_id": "other"})
         self.assertIsNone(scope.registry_generation.record_for_alias("shell_session"))
 
-    async def test_failed_terminal_delivery_is_retired_without_replaying(self):
+    async def test_failed_terminal_delivery_keeps_output_for_read_retry(self):
         _, result = await self.tool("run_shell", {"cmd": "sleep .02; printf recovery", "wait_ms": 0})
         await self.observation_ready()
         with patch.object(self.runtime, "_normalize_invocation_result", side_effect=OSError("pager unavailable")):
@@ -177,9 +177,13 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('output_error', self.messages()[-1].text)
         sid = result.structured['session_id']
         await asyncio.gather(*tuple(self.host.owner.observations.acking.values()))
-        self.assertNotIn(sid, self.host.owner.sessions)
-        self.assertFalse(self.host.owner.pending)
+        self.assertIn(sid, self.host.owner.sessions)
+        self.assertTrue(self.host.owner.pending)
         self.assertFalse(self.host.has_work)
+        _, recovered = await self.tool("call_tool", {"name": "shell_session", "args": {"session_id": sid}})
+        self.assertIn("recovery", recovered.text)
+        await asyncio.gather(*tuple(self.host.owner.observations.acking.values()))
+        self.assertNotIn(sid, self.host.owner.sessions)
 
     async def test_cancel_while_waiting_reaps_before_role_terminal(self):
         _, result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})

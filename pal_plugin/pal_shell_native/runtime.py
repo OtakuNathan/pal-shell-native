@@ -64,6 +64,7 @@ class NativeShellOwner:
         self.events = None
         self.pending = {}
         self.sessions = {}
+        self.input_leases = {}
         self.closed = False
         self.defer_delivery = False
         self.require_output_delivery = False
@@ -153,7 +154,8 @@ class NativeShellOwner:
                     turn_id=pending.turn_id, call_id=tool_call.call_id, budget=call.meta.get('budget')),
                 stage="output", identity=tool_call.call_id))
         except Exception as exc:
-            pending.failure = "Command output is unavailable: " + str(exc)
+            pending.failure = ("Command output could not be saved: " + str(exc) +
+                ". Original output is retained. After resolving storage availability, retry exporting this retained output; do not rerun the command.")
             pending.raw = output_result({**result, "output_error": pending.failure})
         return pending.raw
 
@@ -181,9 +183,6 @@ class NativeShellOwner:
             for old_id, old in tuple(self.pending.items()):
                 if old_id != call_id and old.delivered and old.failure and old.result.get("output_id") == pending.result.get("output_id"):
                     self.pending.pop(old_id, None)
-            if pending.result["status"] in TERMINAL:
-                from .adapter import Completion
-                self.observations.acknowledge(Completion(sid, pending.turn_id, pending.result))
             return
         if session is not None:
             session.pop("output_failure_reported", None)
@@ -221,10 +220,21 @@ class NativeShellOwner:
                     await self.shell.release_output(pending.result)
                 self.pending.pop(call_id, None)
 
+    def release_input_lease(self, call_id):
+        lease = self.input_leases.pop(call_id, None)
+        if lease is not None:
+            store, token = lease
+            store.release(token)
+
+    def release_session_inputs(self, session_id):
+        session = self.sessions.get(session_id, {})
+        self.release_input_lease(session.get("input_lease_id"))
+
     def forget_session(self, session_id):
         """Drop host references after native output was explicitly retired."""
         if not session_id:
             return  # Zero identifies many independent one-shot results.
+        self.release_session_inputs(session_id)
         self.observations.forget(session_id)
         self.sessions.pop(session_id, None)
         for call_id, pending in list(self.pending.items()):
@@ -253,6 +263,8 @@ class NativeShellOwner:
         self.observations.closed = True
         self.pending.clear()
         self.sessions.clear()
+        for call_id in tuple(self.input_leases):
+            self.release_input_lease(call_id)
         if self.events:
             self.events.pending.clear()
             self.events.failures.clear()
@@ -268,6 +280,8 @@ class NativeShellOwner:
         self._shell = None
         self.pending.clear()
         self.sessions.clear()
+        for call_id in tuple(self.input_leases):
+            self.release_input_lease(call_id)
 
     async def reset(self):
         if self._shell is not None and self._shell.remote_work:
@@ -461,7 +475,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
                 hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'shell_session',
                     'args': {'session_id': sid, 'action': 'read', 'wait_ms': 0}},
                     reason='Read this session only if its current state is needed to resolve the precondition.'))
-            raise ToolRejectedError(str(exc), error_code=code, affordances=hints, details=details) from exc
+            raise ToolRejectedError(str(exc), error_code=code, affordances=hints, details=details,
+                                    recovery_hint=details.get("next_step", "")) from exc
 
     def _call_record_sync(self, record, *args):
         if record.execution.effect_kind.value not in READ_EFFECTS:
@@ -477,14 +492,40 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if isinstance(result, (CompleteResult,)):
             if pending:
                 pending.prepared = True
+                if result.output_error:
+                    pending.failure = result.output_error
             payload = raw.structured if isinstance(raw, CapabilityResult) else getattr(raw, "output", None)
             if isinstance(payload, dict):
-                updates = {"affordances": result.affordances + session_affordances(payload)}
+                if pending and payload.get("output_error"):
+                    pending.failure = payload["output_error"]
+                updates = {}
                 if getattr(result, "snapshot_refs", ()):
                     header = {key: value for key, value in payload.items() if key not in {"stdout", "stderr"}}
                     updates["llm_text"] = render_structured_for_llm(header) + "\nOutput preview (complete snapshot available in the referenced file):\n" + result.llm_text
                 result = result.model_copy(update=updates)
         return result
+
+    def _finalize_invocation_result(self, generation, call, result, **kwargs):
+        result = super()._finalize_invocation_result(generation, call, result, **kwargs)
+        record = generation.record_for_alias(call.name)
+        if record is None or not native_action(record) or not isinstance(result, CompleteResult):
+            return result
+        payload = dict(result.output) if isinstance(result.output, dict) else {}
+        pending = self.shell_owner.pending.get(call.call_id)
+        failure = result.output_error or payload.get("output_error") or (pending.failure if pending else "")
+        if not failure:
+            return result
+        if pending:
+            pending.failure = failure
+        hints = session_affordances(
+            {**payload, "output_error": failure}, output_ref=call.call_id if pending else ""
+        )
+        # The shared finalizer may discover a save failure after normalization.
+        # Actions are outside its body budget, but still require captured-view
+        # validation and dedup. This also covers event/observation delivery.
+        return self._resolve_result_guidance(generation, result.model_copy(update={
+            "affordances": result.affordances + hints,
+        }))
 
     async def _invoke_tool_record_async(self, generation, call, **kwargs):
         result = await super()._invoke_tool_record_async(generation, call, **kwargs)
@@ -503,11 +544,20 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     except Exception:
                         continue
                     if isinstance(recovered, (CompleteResult,)):
+                        # Retried normalization goes through the same shared
+                        # finalizer so appends stay budgeted exactly once.
+                        recovered = self._finalize_invocation_result(generation, call, recovered,
+                            budget=kwargs.get("budget"), turn_id=kwargs.get("turn_id"))
                         result = recovered
                         break
             if not isinstance(result, (CompleteResult,)):
                 pending.failure = "The command result could not be delivered. Do not rerun the command to retrieve output."
                 result = result.model_copy(update={"llm_text": pending.failure, "effect": EffectOutcome.APPLIED})
+        if isinstance(result, (CompleteResult,)) and result.output_error and not pending.failure:
+            # The shared finalizer budgets after normalization, so a capture
+            # failure surfaces on the finalized result; propagate it to the
+            # retained output entry before delivery bookkeeping.
+            pending.failure = result.output_error
         core = self.shell_owner.core
         if not self.shell_owner.defer_delivery and (core is None or pending.turn_id not in core.state.active_turns):
             # Embedded callers own delivery at the returned result boundary.

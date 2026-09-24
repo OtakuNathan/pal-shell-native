@@ -162,10 +162,12 @@ class ShellCompletionSource:
                 record = self.runtime.registry_generation.record_for_alias("run_shell")
                 call = new_tool_call(name="run_shell", args={}, call_id=continuation.turn_id)
                 try:
-                    result = self.runtime._normalize_invocation_result(record, call, output_result(loaded),
+                    result = self.runtime.deliver_invocation_result(record, call, output_result(loaded),
                         budget=session["budget"], turn_id=continuation.turn_id)
                     if not isinstance(result, (CompleteResult,)):
                         raise RuntimeError("Command output could not be delivered")
+                    if result.output_error:
+                        delivery_error = OSError(result.output_error)
                     body = self.runtime._render_invocation_for_llm(result)
                 except Exception as exc:
                     delivery_error = exc

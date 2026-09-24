@@ -437,6 +437,13 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(call.call_id, self.owner.pending)
         self.assertEqual(count.read_text(), 'one\n')
         self.assertNotIn('shell_recover_output', result.text)
+        await asyncio.sleep(0)
+        self.assertTrue(self.owner.pending)
+        self.assertTrue(self.worker.outputs)
+        recovered = await self.runtime.execute_tool_async(new_tool_call(name='call_tool', args={
+            'name': 'shell_session', 'args': {'output_ref': call.call_id}}), turn_id='origin')
+        self.assertIn('retained', recovered.text)
+        self.assertEqual(count.read_text(), 'one\n')
         await asyncio.gather(*tuple(self.owner.observations.acking.values()))
         self.assertFalse(self.owner.pending)
         self.assertFalse(self.worker.outputs)

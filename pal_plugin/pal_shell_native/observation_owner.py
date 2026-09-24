@@ -86,6 +86,8 @@ class ObservationOwner:
         self.latest[sid] = Snapshot(deepcopy(raw), (previous.revision if previous else 0) + int(changed),
                                     state, datetime.now(timezone.utc).isoformat())
         self.owner.sessions[sid]['latest_status'] = raw['status']
+        if raw['status'] in TERMINAL:
+            self.owner.release_session_inputs(sid)
         # Intentionally no wakeup: observing a new revision isn't an event.
 
     def eligible(self, sid, *, ready=False, claimed=False):
@@ -387,10 +389,12 @@ class ObservationOwner:
                     result = None
                     try:
                         record = runtime.registry_generation.record_for_alias('run_shell')
-                        result = runtime._normalize_invocation_result(record, call, raw,
+                        result = runtime.deliver_invocation_result(record, call, raw,
                             budget=session.get('budget'), turn_id=continuation.turn_id)
                         if not isinstance(result, (CompleteResult,)):
                             raise RuntimeError(result.llm_text)
+                        if result.output_error:
+                            error = OSError(result.output_error)
                         body = runtime._render_invocation_for_llm(result)
                     except Exception as exc:
                         error = exc
@@ -443,14 +447,14 @@ class ObservationOwner:
         session = self.owner.sessions.get(sid)
         if session is not None:
             session['output_failure_reported'] = True
-        pending = self.owner.pending.get(self.identity(event))
-        if pending:
-            pending.delivered = True
-            pending.failure = 'Output unavailable'
+        from .runtime import PendingOutput
+        pending = self.owner.pending.setdefault(self.identity(event),
+            PendingOutput(event.result, event.origin_turn))
+        pending.delivered = True
+        pending.failure = 'Output unavailable'
         self.release_claim(sid, event)
         if event.result['status'] in TERMINAL:
             self.retire(event)
-            self.acknowledge(event)
 
     def retry_acknowledgements(self):
         # Reconnection only shortens an existing delay; it never creates new work.

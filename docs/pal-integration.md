@@ -57,3 +57,36 @@ The hook only projects ready data and never waits for process or network activit
 The package requires the paired Pal revision pinned in CI; both commits must be
 available before running remote CI. No worker wire-protocol or native ABI change
 is required for this host-side refactor.
+
+### Output-save failures and input snapshots
+
+A delivered export error does not acknowledge native stdout/stderr. Failed output
+stays retained until a successful export and delivery, or an explicit release.
+`shell_session(action="read", session_id=...)` retries the captured failed export;
+when a one-shot command has no session, its failure affordance supplies an
+`output_ref` instead. That reference supports only read and release, never command
+execution. Storage failures do not change the command's actual effect or status.
+
+A shell invocation leases the output snapshots visible in its launching model
+request before execution begins. The lease survives compaction, replacement of
+request pins, and turn completion, and is released on observed execution termination
+or session cleanup. Unresolved execution outcomes retain the lease until reconciled
+or the owner shuts down; command strings are not parsed to infer ownership.
+
+### Result guidance
+
+Pair this plugin with Pal's result-guidance revision. Ordinary live, watched,
+PTY, and terminal results report facts without repeating a session action menu;
+static relationships remain in the tool descriptors. An actual output-save/read
+failure supplies a validated `shell_session(action="read", session_id=...)`
+recovery action, or an `output_ref` for retained one-shot output. This applies to
+ordinary results, resident completion events, and active-turn observations,
+including save failures first discovered by Pal's finalizer. Recovery exports
+retained output and never reruns the command. Invalid-session recovery text is
+carried by `recovery_hint` instead of being hidden in host-only details.
+
+Pal validates routes, schemas, and role scope and deduplicates the actions.
+Optional actions are outside the body truncation budget and cannot crowd out
+execution facts; the complete rendered result can therefore exceed that budget.
+These source changes require the paired Pal resident runtime activation; copying
+plugin files alone does not activate a new execution runtime.
