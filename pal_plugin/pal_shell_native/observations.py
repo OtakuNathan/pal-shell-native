@@ -31,6 +31,8 @@ def observation_is_current(result: Mapping[str, Any], session: Mapping[str, Any]
 def output_since(loaded: Mapping[str, Any], offsets: Mapping[str, int]) -> dict[str, Any]:
     """Project new bytes without changing the retained full-output snapshot."""
     result = dict(loaded)
+    if loaded.get("_output_snapshots"):
+        return result
     for stream in ("stdout", "stderr"):
         result[stream] = loaded.get(stream + "_bytes", b"")[offsets.get(stream, 0):].decode("utf-8", errors="replace")
     return result

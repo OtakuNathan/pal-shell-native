@@ -15,7 +15,7 @@ On Linux aarch64, CPython 3.13.5:
   Windows-only prototype and opt-in 95-second idle RPC check.
 - Pal host acceptance against the final wheel: 122 passed, 19 subtests. This includes
   local and remote execution, Bunshin sandbox activation, independent request/observe
-  timing, paging/recovery, attention changes and ACK failures.
+  timing, snapshot/recovery, attention changes and ACK failures.
 - Package compatibility tests cover cold-import verification and rejection of
   hosts missing the observation hooks. A final resident coverage regression suite
   passed 21 tests: an older captured event cannot mark a newer state as delivered.

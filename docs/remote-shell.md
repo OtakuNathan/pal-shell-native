@@ -10,7 +10,7 @@ an activated Pal installation.
 | Owner | Implementation | Responsibilities |
 |---|---|---|
 | Resident execution | `pal_plugin/pal_shell_native/router.py` | Public session IDs, target/Runtime tickets, unresolved operations, original delivery binding, bounded materialization |
-| Existing shell owner/events | `pal_plugin/pal_shell_native/runtime.py`, `events.py` | Output paging, L1 acknowledgment, recovery, original-channel completion |
+| Existing shell owner/events | `pal_plugin/pal_shell_native/runtime.py`, `events.py` | Output snapshots, L1 acknowledgment, recovery, original-channel completion |
 | Optional plugin | `pal_plugin/pal_shell_native/plugin.py`, packaged `remote` manifest | Native execution replacement through `execution:extensions`, composed remote Hub ownership |
 | Hub and Slot | `pal-shell-native/pal_plugin/pal_shell_remote/hub.py`, `slot.py` | Target configuration, existing startup commands, strict SSH forwarding, fd leases, connection retirement |
 | Separate worker package | `pal-shell-native/python/pal_shell_worker` | Authentication, native Runtime, operation journal, retained output, completion snapshots, machine metadata, privileged operation grants |
@@ -286,7 +286,7 @@ tests (including Unicode cwd, byte quota, deadlines and descendant termination)
 and cross-machine Pal tests against the standalone bundle. The latter verified
 UTF-8 stdout/stderr and exit code 7, a non-administrator token, killed SSH transport
 with reconciliation and a single counted side effect, session termination after
-reconnect, paging, and no-effect management/PTY rejection. The limited-user
+reconnect, snapshot delivery, and no-effect management/PTY rejection. The limited-user
 `PalShellWindowsE2E` task has no automatic triggers. Bundle, connection configuration
 and logs reside in the native repository's `build/remote-validation/windows/`.
 This test instance is separate from live Pal activation.
@@ -383,7 +383,7 @@ was extended to thirty seconds. This does not change command execution timeouts.
 
 The installed standalone worker passed cross-machine Pal acceptance: non-root
 identity, killed SSH transport with unchanged Runtime and one counted side effect,
-public PTY session recovery after detach/reattach, paging and final output release.
+public PTY session recovery after detach/reattach, snapshot delivery and final output release.
 Startup and shutdown management calls were rejected without execution.
 
 At the user's request the worker remains installed as an independent user
@@ -434,7 +434,7 @@ host verification and enrolled RPC authentication. Commands executed as UID 1000
 Killing the actual SSH tunnel and dropping the submission acknowledgment preserved
 the Runtime epoch; reconciliation recovered the command and its counted side effect
 occurred once. An existing public PTY handle remained usable after backend detach,
-tunnel loss and reattach. Large output passed through Pal's existing paging path.
+tunnel loss and reattach. Large output passed through Pal's immutable output snapshot path.
 The final worker probe reported zero active tasks, retained outputs and reservations.
 
 The temporary worker was stopped after acceptance, then explicitly retained and
@@ -477,3 +477,15 @@ in a coordinated window, preserving sessions/output and root journals. Install
 reviewed Linux management files manually, then verify ordinary execution, approved
 apt update, denial and reconnect separately. Physical shutdown is a separate
 owner-authorized E2E, never an installation test.
+
+
+## Target discovery output
+
+`list_remote(refresh=false, target=null, view="summary")` defaults to compact
+target/readiness facts. Select `view="detail"` for resources, quotas, privilege
+and protocol diagnostics. `target=ID` limits both returned rows and refresh probes
+to that target; `target=0` stays local without querying the remote hub. Unknown
+IDs fail explicitly, while offline configured targets remain listed with their
+actual error and unknown observations. Neither listing nor refresh wakes targets.
+The internal port retains full descriptions; projection belongs to the shell
+plugin. Existing remote workers and their wire protocol do not change.

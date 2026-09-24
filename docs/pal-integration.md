@@ -9,7 +9,7 @@ Pal exposes `execution:extensions`, a stable logical execution handle. The plugi
 returns a ModuleHandle with an execution extension. Under the normal plugin write
 fence, Pal prepares the replacement registry generation and state port, then
 activates plugin event/control contributions. Failure restores the previous
-projection. Logical file state, grants, paging state and the executor remain shared.
+projection. Logical file state, grants, output snapshot ownership and the executor remain shared.
 
 The plugin refuses detach while execution, undelivered output, approvals or
 observation delivery remain active. Pal checks this before withdrawing any plugin

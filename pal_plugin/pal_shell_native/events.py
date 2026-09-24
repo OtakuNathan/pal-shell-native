@@ -11,7 +11,7 @@ from pal.llm.ir import LLMMessageIR, MessageRole, TextPartIR
 from pal.memory import L1MessageKind, L1TranscriptMessage
 from pal.shared import PromptAssemblyContext
 from pal.shared.tool_protocol import new_tool_call
-from pal.execution.tool_facade import CompleteResult, PagedResult, ToolRejectedError
+from pal.execution.tool_facade import CompleteResult, ToolRejectedError
 
 from .runtime import output_result
 from .adapter import TERMINAL
@@ -141,7 +141,7 @@ class ShellCompletionSource:
             memory = self.core.context.port_registry.get("memory:memory")
             committed = getattr(memory, "contains_l1_message", lambda *_: False)(identity, identity)
             if not committed:
-                # Bind the pager to the new resident turn before storing output.
+                # Bind output delivery to the new resident turn.
                 self.core._begin_tool_result_turn(continuation)
                 loaded = self.owner.observations.prepared.get(identity)
                 if loaded is None:
@@ -164,7 +164,7 @@ class ShellCompletionSource:
                 try:
                     result = self.runtime._normalize_invocation_result(record, call, output_result(loaded),
                         budget=session["budget"], turn_id=continuation.turn_id)
-                    if not isinstance(result, (CompleteResult, PagedResult)):
+                    if not isinstance(result, (CompleteResult,)):
                         raise RuntimeError("Command output could not be delivered")
                     body = self.runtime._render_invocation_for_llm(result)
                 except Exception as exc:
@@ -175,7 +175,7 @@ class ShellCompletionSource:
                 message = LLMMessageIR(role=MessageRole.USER, semantic_kind="runtime_context_artifact",
                     parts=(TextPartIR(text),), message_id=continuation.turn_id,
                     metadata={**event_metadata(completion),
-                              "result_handle": result.result_handle if isinstance(result, PagedResult) else {},
+                              "result_snapshots": [r.to_dict() for r in getattr(result, "snapshot_refs", ())],
                               "delivery_failed": bool(delivery_error)})
                 opening = replace(continuation.opening_event, payload=message)
                 continuation.opening_event = opening
@@ -191,8 +191,10 @@ class ShellCompletionSource:
                     "events": {identity: {"message_id": identity, "delivery_failed": bool(delivery_error)}},
                     "outputs": {} if delivery_error else {key: {stream: completion.result.get(stream + "_total", 0) for stream in ("stdout", "stderr")}},
                 }
+                self.runtime.bind_result_history(memory)
                 memory.begin_l1_turn(continuation.turn_id, user_message=message,
                     metadata={"observation_coverage": {NAMESPACE: coverage}})
+                self.runtime.result_snapshots.finish_references(getattr(result, "snapshot_refs", ()))
                 if delivery_error:
                     self.owner.observations.report_failure(completion)
                 else:

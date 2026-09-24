@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pal.execution.contracts import CapabilityResult
 from pal.execution.runtime import ExecutionRuntime
 from pal.execution.tool_facade import (
-    CompleteResult, PagedResult, EffectOutcome, EffectReceipt, ToolRejectedError,
+    CompleteResult, EffectOutcome, EffectReceipt, ToolRejectedError,
     ToolAffordance, ToolExecutionError,
 )
 from pal.shared.result_rendering import render_structured_for_llm
@@ -36,8 +36,11 @@ def output_result(result):
     if result.get("status") not in TERMINAL:
         payload["returncode"] = None
     text = render_structured_for_llm(payload)
+    if result.get("_snapshot_text"):
+        text += "\n" + result["_snapshot_text"]
     return CapabilityResult(status=RuntimeStatus.OK, structured=payload, text=text, llm_text=text,
-                            effect_receipt=EffectReceipt(outcome=EffectOutcome.APPLIED))
+                            effect_receipt=EffectReceipt(outcome=EffectOutcome.APPLIED),
+                            snapshot_refs=tuple(result.get("_output_snapshots", ())))
 
 
 @dataclass
@@ -144,8 +147,11 @@ class NativeShellOwner:
                 incoming = result.get("stdout_total", 0) + result.get("stderr_total", 0)
                 if retained + incoming > REMOTE_PENDING_BYTES:
                     raise RemoteFailure("output_capacity", "Local output retention capacity is exhausted", effect="applied")
+            from .snapshot_delivery import materialize_delivery
             pending.raw = raw if raw is not None else output_result(await retry_read(
-                lambda: self.shell.materialize(result), stage="output", identity=tool_call.call_id))
+                lambda: materialize_delivery(self, result, runtime=call.meta.get('execution_runtime', getattr(self, 'runtime', None)),
+                    turn_id=pending.turn_id, call_id=tool_call.call_id, budget=call.meta.get('budget')),
+                stage="output", identity=tool_call.call_id))
         except Exception as exc:
             pending.failure = "Command output is unavailable: " + str(exc)
             pending.raw = output_result({**result, "output_error": pending.failure})
@@ -274,6 +280,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
     def __init__(self, *, owner=None, **kwargs):
         super().__init__(**kwargs)
         self.shell_owner = owner or NativeShellOwner()
+        if owner is None:
+            self.shell_owner.runtime = self
         self._owns_shell = owner is None
 
     def build_introspection_provider(self):
@@ -349,7 +357,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
             if args.get('action', 'read') == 'read' and not args.get('wait_ms'):
                 payload = result.structured or {}
                 pending = self.shell_owner.pending.get(call.call_id)
-                if isinstance(invocation, PagedResult) and pending is not None:
+                if bool(getattr(invocation, "snapshot_refs", ())) and pending is not None:
                     # Use this call's captured result, never a newer live session.
                     payload = pending.result
                 if payload.get('session_id'):
@@ -378,7 +386,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
     @classmethod
     def project_view(cls, view, owner):
         runtime = cls(owner=owner, runtime_root=view.runtime_root, logical_state=view.logical_state,
-                      tool_result_pager=view.tool_result_pager, sync_executor=view.sync_executor,
+                      execution_sessions=view.execution_sessions, result_snapshots=view.result_snapshots, sync_executor=view.sync_executor,
                       lifecycle_gate=view.lifecycle_gate)
         runtime._registry_generation = view.registry_generation
         return runtime
@@ -419,7 +427,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
                             ticket = self.shell_owner.shell.tickets[sid]
                             self.shell_owner.sessions[sid] = dict(self.shell_owner.shell.operation_context[ticket.operation_id])
                         from types import SimpleNamespace
-                        return await self.shell_owner.stage(SimpleNamespace(meta={"tool_call": call, "turn_id": turn_id}), recovered)
+                        return await self.shell_owner.stage(SimpleNamespace(meta={"tool_call": call, "turn_id": turn_id,
+                            "execution_runtime": self, "budget": budget}), recovered)
                     return output_result(recovered)
                 except Exception:
                     LOGGER.warning("shell operation unresolved identity=%s", exc.operation_id)
@@ -439,7 +448,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
             sid = call.args.get('session_id')
             if prefix == 'invalid_session':
                 details['session_id'] = sid
-                details['next_step'] = 'Consult the previously delivered result or result_handle; do not replay the command.'
+                details['next_step'] = 'Consult the previously delivered result or output snapshot; do not replay the command.'
             elif prefix in {'write_busy', 'result_capacity'}:
                 details['blocking_sessions'] = [
                     {'session_id': key, 'status': item.get('latest_status', 'running'),
@@ -465,15 +474,15 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if not native_action(record):
             return result
         pending = self.shell_owner.pending.get(call.call_id)
-        if isinstance(result, (CompleteResult, PagedResult)):
+        if isinstance(result, (CompleteResult,)):
             if pending:
                 pending.prepared = True
             payload = raw.structured if isinstance(raw, CapabilityResult) else getattr(raw, "output", None)
             if isinstance(payload, dict):
                 updates = {"affordances": result.affordances + session_affordances(payload)}
-                if isinstance(result, PagedResult):
+                if getattr(result, "snapshot_refs", ()):
                     header = {key: value for key, value in payload.items() if key not in {"stdout", "stderr"}}
-                    updates["llm_text"] = render_structured_for_llm(header) + "\nOutput preview (complete snapshot available via result_handle):\n" + result.llm_text
+                    updates["llm_text"] = render_structured_for_llm(header) + "\nOutput preview (complete snapshot available in the referenced file):\n" + result.llm_text
                 result = result.model_copy(update=updates)
         return result
 
@@ -485,7 +494,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
         pending = self.shell_owner.pending.get(call.call_id)
         if pending is None:
             return result
-        if not isinstance(result, (CompleteResult, PagedResult)):
+        if not isinstance(result, (CompleteResult,)):
             # Retry only normalization of retained output, never the tool handler.
             if pending.raw is not None:
                 for _ in range(2):
@@ -493,10 +502,10 @@ class NativeExecutionRuntime(ExecutionRuntime):
                         recovered = self._normalize_invocation_result(record, call, pending.raw, budget=kwargs.get("budget"), turn_id=kwargs.get("turn_id"))
                     except Exception:
                         continue
-                    if isinstance(recovered, (CompleteResult, PagedResult)):
+                    if isinstance(recovered, (CompleteResult,)):
                         result = recovered
                         break
-            if not isinstance(result, (CompleteResult, PagedResult)):
+            if not isinstance(result, (CompleteResult,)):
                 pending.failure = "The command result could not be delivered. Do not rerun the command to retrieve output."
                 result = result.model_copy(update={"llm_text": pending.failure, "effect": EffectOutcome.APPLIED})
         core = self.shell_owner.core

@@ -38,7 +38,11 @@ class RemoteHub:
                 from pal_shell_worker.metadata import machine_identity
                 result = {'machine_identity': machine_identity()}
             elif method == 'list':
-                result = {'targets': await asyncio.gather(*(s.describe(params.get('refresh', False)) for s in self.slots.values()))}
+                target = params.get('target')
+                if target is not None and (type(target) is not int or target not in self.slots):
+                    raise RemoteError('invalid_target', 'Target is not configured')
+                selected = self.slots.values() if target is None else (self.slots[target],)
+                result = {'targets': await asyncio.gather(*(s.describe(params.get('refresh', False)) for s in selected))}
             else:
                 slot = self.slots.get(params.get('target'))
                 if slot is None:

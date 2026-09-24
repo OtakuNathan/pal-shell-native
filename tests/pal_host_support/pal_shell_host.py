@@ -13,7 +13,7 @@ from pal.execution.runtime import ExecutionRuntime
 from pal.execution.contracts import CapabilityResult
 from pal.shared.tool_protocol import new_tool_call
 from pal.execution.tool_facade import (
-    StructuredToolOutput, ToolRejectedError, CompleteResult, PagedResult, ToolHandlerResult, EffectReceipt, EffectOutcome,
+    StructuredToolOutput, ToolRejectedError, CompleteResult, ToolHandlerResult, EffectReceipt, EffectOutcome,
 )
 from pal.execution.tool_semantics import DIRECT_CONTROL, INDIRECT_CONTROL
 from pal.foundation import EventEnvelope
@@ -38,7 +38,7 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
     def project_view(cls, view, shell):
         """Explicit prototype factory for a Bunshin registry overlay sharing its owner."""
         runtime = cls(shell, runtime_root=view.runtime_root, logical_state=view.logical_state,
-                      tool_result_pager=view.tool_result_pager, sync_executor=view.sync_executor,
+                      execution_sessions=view.execution_sessions, result_snapshots=view.result_snapshots, sync_executor=view.sync_executor,
                       lifecycle_gate=view.lifecycle_gate)
         runtime._registry_generation = view.registry_generation
         return runtime
@@ -65,13 +65,13 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
         # Keep live controls outside the paged body: page one may contain only stdout.
         payload = raw.structured if isinstance(raw, CapabilityResult) else getattr(raw, "output", None)
         if (record.alias in {"prototype_run_shell", "shell_session"}
-                and isinstance(payload, dict) and isinstance(result, (CompleteResult, PagedResult))):
+                and isinstance(payload, dict) and isinstance(result, CompleteResult)):
             result = result.model_copy(update={"affordances": result.affordances + session_affordances(payload)})
         return result
 
     async def _invoke_tool_record_async(self, generation, call, **kwargs):
         result = await super()._invoke_tool_record_async(generation, call, **kwargs)
-        if isinstance(result, (CompleteResult, PagedResult)):
+        if isinstance(result, CompleteResult):
             await self.finish_output(call.call_id)
         return result
 
@@ -92,7 +92,7 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
             self.pending_outputs[call_id] = call, raw, output
         record = self.registry_generation.record_for_alias(call.name)
         result = self._normalize_invocation_result(record, call, raw, budget=budget, turn_id=turn_id)
-        if isinstance(result, (CompleteResult, PagedResult)):
+        if isinstance(result, CompleteResult):
             await self.finish_output(call_id)
         return self._canonical_result_from_invocation(call.name, call_id, result)
 
@@ -251,13 +251,13 @@ class PrototypeHost:
                                         effect_receipt=EffectReceipt(outcome=EffectOutcome.APPLIED, receipt={"native_output": loaded["output_id"]}))
                 paged = runtime._normalize_invocation_result(
                     record, call, raw, budget=self.shell.completion_budgets.get(sid, self.completion_budget), turn_id=turn)
-                if not isinstance(paged, (CompleteResult, PagedResult)):
+                if not isinstance(paged, CompleteResult):
                     raise RuntimeError(f"completion output validation failed: {paged!r}")
-                handle = paged.result_handle if isinstance(paged, PagedResult) else {}
+                refs = [ref.to_dict() for ref in paged.snapshot_refs]
                 message = LLMMessageIR(
                     role=MessageRole.USER, semantic_kind="runtime_context_artifact", message_id=turn,
                     parts=(TextPartIR("Runtime shell observation (not a user instruction):\n" + paged.llm_text),),
-                    metadata={**event_metadata(completion), "result_handle": handle},
+                    metadata={**event_metadata(completion), "result_snapshots": refs},
                 )
                 self.memory.begin_l1_turn(turn, user_message=message, metadata={"source": EVENT})
                 # Consumer is supplied by the acceptance harness; no paid model is invoked.

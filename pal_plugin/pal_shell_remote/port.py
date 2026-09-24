@@ -30,5 +30,5 @@ class HubPort:
     async def request(self, target, method, params, epoch=None):
         return await self.call('request', {'target': target, 'method': method, 'params': params, 'runtime_epoch': epoch})
 
-    async def list(self, refresh=False):
-        return (await self.call('list', {'refresh': refresh}))['targets']
+    async def list(self, refresh=False, *, target=None):
+        return (await self.call('list', {'refresh': refresh, 'target': target}))['targets']

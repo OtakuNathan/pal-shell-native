@@ -163,8 +163,10 @@ class ShellRuntime:
         await self._request("release_output", session_id, cleanup=True)
         self._mark_consumed(session_id)
 
-    async def materialize(self, event: dict) -> dict:
+    async def materialize(self, event: dict, *, load_output: bool = True) -> dict:
         """Read the exact file prefix observed by native code, outside the asyncio thread."""
+        if not load_output:
+            return dict(event)
         def load():
             result = dict(event)
             for stream in ("stdout", "stderr"):
@@ -205,7 +207,7 @@ class ShellRuntime:
                                wait_ms: int | None = None, text: str | None = None,
                                rows: int | None = None, columns: int | None = None,
                                extend_by_ms: int | None = None) -> dict:
-        """Retained file handoff for a host that acknowledges only after paging.
+        """Retained file handoff for a host that acknowledges only after output delivery.
 
         The tool contract validates action-specific arguments before dispatch.
         Unlike the convenience read(), a terminal snapshot is not consumed here.

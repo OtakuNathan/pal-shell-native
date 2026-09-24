@@ -63,11 +63,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 "cmd": f"head -c 20000 /dev/zero; touch {shlex.quote(str(ready))}; sleep 60", "wait_ms": 0}),
                 turn_id="origin", budget=ToolCallBudget(max_output_chars=10, preview_chars=10))
             self.assertTrue(started.ok, started.text)
-            self.assertIn("result_handle", started.structured)
-            handle = started.structured["result_handle"]
-            body = "".join(self.runtime.read_tool_result_page(
-                result_ref=handle["result_ref"], page=page, turn_id="origin").content
-                for page in range(1, handle["page_count"] + 1))
+            self.assertTrue(started.snapshot_refs)
+            body = Path(started.snapshot_refs[0].path).read_text()
             sid = json.loads(body)["session_id"]
             control = next(a for a in started.invocation_result.affordances if a.tool == "read_tool")
             self.assertEqual(control.arguments, {"name": "shell_session"})
@@ -79,9 +76,9 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 "name": "shell_session", "args": {"session_id": sid, "action": "read"}}),
                 turn_id="origin", budget=ToolCallBudget(max_output_chars=1000, preview_chars=500))
             self.assertTrue(result.ok, result.text)
-            self.assertIn("result_handle", result.structured)
+            self.assertTrue(result.snapshot_refs)
             actions = result.invocation_result.affordances
-            self.assertTrue(any(a.tool == "read_tool_result" for a in actions))
+            self.assertIn(result.snapshot_refs[0].path, result.llm_text)
             session_hints = [a for a in actions if a.tool == "read_tool"]
             self.assertEqual(len(session_hints), 1)
             self.assertIn("terminate", session_hints[0].reason)
@@ -151,10 +148,10 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         started = await self.tool("prototype_run_shell", cmd="sleep .03; head -c 5000 /dev/zero", wait_ms=0)
         sid = started.structured["session_id"]
         await self.wait_for_completion()
-        store = self.runtime.tool_result_pager.store
-        def fail(**kwargs):
+        store = self.runtime.result_snapshots.capture
+        def fail(*args, **kwargs):
             raise OSError("pager unavailable")
-        self.runtime.tool_result_pager.store = fail
+        self.runtime.result_snapshots.capture = fail
         call = new_tool_call(name="call_tool", args={"name": "shell_session", "args": {"session_id": sid}})
         budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
         result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="origin")
@@ -162,7 +159,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(sid, self.host.shell._consumed)
         path = Path(self.runtime.pending_outputs[call.call_id][2]["stdout_path"])
         self.assertTrue(path.exists())
-        self.runtime.tool_result_pager.store = store
+        self.runtime.result_snapshots.capture = store
         recovered = await self.runtime.retry_output(call.call_id, budget=budget, turn_id="origin")
         self.assertTrue(recovered.ok, recovered.text)
         self.assertFalse(path.exists())
@@ -274,17 +271,10 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         budget = ToolCallBudget(max_output_chars=4096, preview_chars=4096)
         result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="large")
         self.assertTrue(result.ok, result.text)
-        handle = result.structured["result_handle"]
         self.assertTrue(paths and all(not path.exists() for path in paths))
-        rendered = "".join(self.runtime.read_tool_result_page(
-            result_ref=handle["result_ref"], page=page, turn_id="large").content
-            for page in range(1, handle["page_count"] + 1))
+        rendered = Path(result.snapshot_refs[0].path).read_text()
         self.assertEqual(json.loads(rendered)["stdout"], payload)
-        middle_page = rendered.index("MIDDLE-IS-RETAINED") // handle["page_size"] + 1
-        later = await self.runtime.execute_tool_async(new_tool_call(name="read_tool_result", args={
-            "result_ref": handle["result_ref"], "page": middle_page}), turn_id="large")
-        self.assertTrue(later.ok, later.text)
-        self.assertIn("MIDDLE-IS-RETAINED", later.llm_text)
+        self.assertIn("MIDDLE-IS-RETAINED", rendered)
         self.assertNotIn("stdout_path", rendered)
 
     async def test_pager_failure_retains_file_and_retry_does_not_repeat_command(self):
@@ -293,16 +283,16 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             command = f"printf once >> {shlex.quote(str(counter))}; head -c 5000 /dev/zero"
             call = new_tool_call(name="prototype_run_shell", args={"cmd": command})
             budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
-            original = self.runtime.tool_result_pager.store
-            def fail(**kwargs):
+            original = self.runtime.result_snapshots.capture
+            def fail(*args, **kwargs):
                 raise OSError("pager unavailable")
-            self.runtime.tool_result_pager.store = fail
+            self.runtime.result_snapshots.capture = fail
             result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="retry")
             self.assertFalse(result.ok)
             output = self.runtime.pending_outputs[call.call_id][2]
             path = Path(output["stdout_path"])
             self.assertTrue(path.exists())
-            self.runtime.tool_result_pager.store = original
+            self.runtime.result_snapshots.capture = original
             recovered = await self.runtime.retry_output(call.call_id, budget=budget, turn_id="retry")
             self.assertTrue(recovered.ok, recovered.text)
             self.assertFalse(path.exists())
@@ -339,11 +329,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(Path(observed.result["stdout_path"]).exists())
         turn = event_metadata(observed)["event_id"]
         message = self.host.memory.l1_store.turns.get(turn).messages[0]
-        handle = message.metadata["result_handle"]
-        self.assertEqual(handle["page_size"], 600)
-        # Full rendered JSON remains available after native session/file retirement.
-        rendered = "".join(self.runtime.read_tool_result_page(result_ref=handle["result_ref"],
-            page=p, turn_id=turn).content for p in range(1, handle["page_count"] + 1))
+        refs = message.metadata["result_snapshots"]
+        rendered = Path(refs[0]["path"]).read_text()
         self.assertTrue(json.loads(rendered)["stdout"].endswith("END"))
 
     async def test_bunshin_overlay_uses_same_native_write_owner(self):

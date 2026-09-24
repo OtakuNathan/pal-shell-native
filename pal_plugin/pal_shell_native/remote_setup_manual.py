@@ -52,6 +52,32 @@ shell does not support remote and must not silently fall back or change backend.
 Missing resident support requires a separately planned Pal activation; never
 restart the active Pal host from its own turn to finish onboarding.
 
+## Upgrade an existing worker
+
+Reuse its enrolled identity, config, service and target; do not repeat onboarding.
+Inspect the running process and effective service ExecStart/drop-ins to establish
+its installation path and service owner. An administrative SSH login is not the
+worker account. On Linux, query another user's manager as root with
+`systemctl --user --machine=USER@.host ...`; setting XDG_RUNTIME_DIR alone does
+not switch the caller's identity. Do not guess the installed version if the old
+binary lacks a version command.
+
+Use the release API to list matching standalone assets and their checksums;
+prefer structured release information to browsing a page full of navigation
+links. Match the host OS/architecture and verify SHA256SUMS. Read build machinery
+only if a compatible published bundle is unavailable. The worker host needs no
+Pal installation or host plugin/wheel upgrade unless separately requested.
+
+Stage into a new versioned directory, preserving the existing bundle and config.
+Ensure the extraction user can read the archive and traverse the staging path:
+a root-owned mode-0700 directory cannot be read through runuser. Either prepare
+worker-owned staging or extract as administrator and set the release ownership.
+Validate the executable as the service user, then prepare the service change and
+rollback. Check for active work before restarting: restart loses old sessions.
+After authorized activation, verify the effective executable/service, then use
+`list_remote(target=ID, refresh=true)` and one harmless command on that target.
+Use `view=detail` only when summary readiness leaves a concrete diagnostic need.
+
 ## Prepare the remote worker and identities
 
 Prefer a verified matching standalone worker bundle. Preserve its directory
@@ -179,7 +205,7 @@ how local uncommitted changes were transferred before claiming remote test resul
 For an isolated acceptance task, disconnect the transport and reconnect to the
 same Runtime; verify the original session/output is accessible. A lost submission
 acknowledgment is uncertain and the host queries the original operation; never submit a fresh command to recover its result.
-Check a PTY when supported, output paging/recovery, completion delivery and output
+Check a PTY when supported, output snapshot/recovery, completion delivery and output
 release. Worker restart changes Runtime identity and is not connection recovery.
 An idle worker can restart and reconnect within its own slot without reloading
 the Hub or local shell. Old UNKNOWN operations still block that target; other

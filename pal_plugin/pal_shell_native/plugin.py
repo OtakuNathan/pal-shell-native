@@ -19,7 +19,7 @@ class NativeExtension:
         return NativeExecutionRuntime(runtime_root=previous.runtime_root,
                                       sync_executor=previous.sync_executor,
                                       logical_state=previous.logical_state,
-                                      tool_result_pager=previous.tool_result_pager)
+                                      execution_sessions=previous.execution_sessions, result_snapshots=previous.result_snapshots)
 
     def build_provider(self, runtime):
         return runtime.build_introspection_provider()

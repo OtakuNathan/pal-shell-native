@@ -34,7 +34,28 @@ class TargetRunInput(RunInput):
 
 
 class ListRemoteInput(StrictToolModel):
-    refresh: bool = False
+    refresh: bool = Field(default=False, description="Refresh selected targets without waking them.")
+    target: int | None = Field(default=None, ge=0, strict=True, description="Exact target ID; omit to list all. 0 is local. A selected refresh probes only this target.")
+    view: Literal["summary", "detail"] = Field(default="summary", description="Summary for target selection and readiness; detail for resources, limits and protocol diagnostics.")
+
+
+def _target_summary(item):
+    """Project decision-relevant facts; unknown observations stay unknown."""
+    summary = {key: item[key] for key in (
+        "target", "name", "shortcut", "reachable", "probe_error", "needs_wake",
+        "requires_wake", "registered", "execution", "start_actions", "expected_offline",
+        "os", "arch", "shell",
+    ) if key in item}
+    if "static" in item:
+        summary["usage"] = item["static"].get("usage", "")
+    if "dynamic" in item:
+        dynamic = item["dynamic"]
+        summary["dynamic"] = None if dynamic is None else {
+            key: dynamic.get(key) for key in (
+                "os", "worker_arch", "shell_ready", "active_tasks", "observed_at", "required_user_action",
+            )
+        }
+    return summary
 
 
 NativeSessionInput = SessionInput
@@ -150,10 +171,10 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         namespace="operation", scope="module", family="exec", action_name="remote_list", aliases=("list_remote",),
         InputModel=ListRemoteInput, OutputModel=StructuredToolOutput, execution=INDIRECT_LOCAL_READ,
         async_handler_name="list_remote_async", metadata={"background_execution": True, "native_shell_action": "list_remote"}, guidance=ToolGuidance(
-            purpose="List legal execution targets with configured facts and timestamped observed resources.",
-            use_when="Choose a machine using OS, CPU architecture, shell and available compute; refresh probes without waking.",
+            purpose="List execution targets and their readiness; defaults to a compact summary.",
+            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed.",
             do_not_use_when="A returned session already fixes its target.",
-            failure_next_steps="Offline entries remain valid targets; use only their configured explicit start actions.",
+            failure_next_steps="Offline entries remain valid targets; use only their configured explicit start actions. For deeper diagnosis, repeat with the target ID and view=detail.",
         ),
     )
     def list_remote(self, call):
@@ -166,9 +187,17 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         items = [{"target": 0, "name": "local", "requires_wake": False, "registered": True,
                   "os": platform.system(), "arch": platform.machine(), "logical_cpus": os.cpu_count(),
                   "shell": {"executable": "/bin/bash", "invocation": ["-lc"]}}]
-        if owner.remote_port is not None:
-            items.extend(await owner.remote_port.list(call.args.get("refresh", False)))
-        return self._result({"targets": items, "remote_attached": owner.remote_port is not None})
+        target = call.args.get("target")
+        if target not in (None, 0):
+            items = []
+        if owner.remote_port is not None and target != 0:
+            items.extend(await owner.remote_port.list(call.args.get("refresh", False), target=target))
+        if target is not None and not items:
+            raise ToolRejectedError("Target is not configured", error_code="invalid_target")
+        view = call.args.get("view", "summary")
+        if view == "summary":
+            items = [_target_summary(item) for item in items]
+        return self._result({"targets": items, "remote_attached": owner.remote_port is not None, "view": view})
 
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_start", aliases=("remote_start",),

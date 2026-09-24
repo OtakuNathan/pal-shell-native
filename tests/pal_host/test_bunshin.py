@@ -109,11 +109,10 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         await self.host.before_model(self.memory, "role", noop)
         await self.ack_ready()
         self.assertFalse(self.host.has_work)
-        notification = next(m.text for m in self.messages() if "result_handle" in m.text)
-        metadata = json.loads(notification.split("Tool result metadata: ", 1)[1])
-        _, page = await self.tool("read_tool_result", {"result_ref": metadata["result_handle"]["result_ref"], "page_size": 10000})
-        self.assertTrue(page.ok, page.llm_text)
-        self.assertIn("0" * 1999 + "1", page.llm_text)
+        from pal.shared.result_snapshot import message_snapshot_refs
+        refs = [ref for message in self.messages() for ref in message_snapshot_refs(message)]
+        self.assertTrue(refs)
+        self.assertIn("0" * 1999 + "1", Path(refs[0].path).read_text())
 
     async def test_pty_control_is_available_without_waiting_for_input(self):
         _, result = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})

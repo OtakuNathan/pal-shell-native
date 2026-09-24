@@ -347,9 +347,9 @@ class ShellRouter(ShellRuntime):
                 self.operation_context.pop(operation_id, None)
             raise
 
-    async def materialize(self, event):
+    async def materialize(self, event, *, load_output=True):
         if not event.get('target'):
-            return await super().materialize(event)
+            return await super().materialize(event, load_output=load_output)
         ticket = self.operations[event['operation_id']]
         async with self.materialize_locks.setdefault(event['output_id'], asyncio.Lock()):
             total = sum(event.get(stream + '_total', 0) for stream in ('stdout', 'stderr'))
@@ -378,6 +378,9 @@ class ShellRouter(ShellRuntime):
                         file.write(data)
                         file.flush()  # Retain validated bytes across a later RPC failure.
                         offset += len(data)
+                result[stream + "_path"] = str(path)
+                if not load_output:
+                    continue
                 def prefix(path=path, size=size):
                     with path.open('rb') as file:
                         return file.read(size)

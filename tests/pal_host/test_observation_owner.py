@@ -340,11 +340,12 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.owner.sessions[7]['output_offsets']['stdout'], 8)
 
     async def test_paged_output_growth_is_internal_progress_without_new_context(self):
-        from pal.execution.tool_facade import PagedResult, EffectOutcome
+        from pal.execution.tool_facade import CompleteResult, EffectOutcome
         from pal.shared.tool_protocol import new_tool_call
         from pal_shell_native.runtime import PendingOutput
         call = new_tool_call(name='shell_session', args={'session_id': 7})
-        invocation = PagedResult(result_handle={'original_size': 100}, page_text='same preview',
+        ref = self.runtime.result_snapshots.capture('full output', call_id=call.call_id, lifetime='t')
+        invocation = CompleteResult(output={}, snapshot_refs=(ref,),
                                  llm_text='same preview', effect=EffectOutcome.NONE, affordances=[])
         result = SimpleNamespace(invocation_result=invocation, structured={}, ok=True)
         self.owner.pending[call.call_id] = PendingOutput(self.raw(stdout_total=4), 't')

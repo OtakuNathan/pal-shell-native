@@ -357,29 +357,27 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             "cmd": "sleep 60", "wait_ms": 0}),
             budget=ToolCallBudget(max_output_chars=10, preview_chars=10))
         self.assertTrue(result.ok, result.text)
-        self.assertIn("result_handle", result.structured)
+        self.assertTrue(result.snapshot_refs)
         header, _ = json.JSONDecoder().raw_decode(result.invocation_result.llm_text)
         self.assertEqual(header["status"], "running")
         self.assertNotIn("request_id", header)
         self.assertNotIn("runtime_epoch", header)
         hints = result.invocation_result.affordances
-        self.assertIn("result_ref", result.structured["result_handle"])
-        if result.structured["result_handle"]["page_count"] > 1:
-            self.assertTrue(any(h.tool == "read_tool_result" for h in hints))
+        self.assertIn(result.snapshot_refs[0].path, result.llm_text)
         session_hints = [h for h in hints if h.tool == "read_tool"]
         self.assertEqual(len(session_hints), 1)
         self.assertIn("terminate", session_hints[0].reason)
         self.assertTrue((await self.session(header["session_id"], action="terminate")).ok)
 
     async def test_output_recovery_is_internal_and_never_reexecutes_command(self):
-        store = self.runtime.tool_result_pager.store
+        store = self.runtime.result_snapshots.capture_chunks
         attempts = []
-        def fail_once(**kwargs):
+        def fail_once(*args, **kwargs):
             attempts.append(kwargs)
             if len(attempts) == 1:
                 raise OSError("test pager failure")
-            return store(**kwargs)
-        self.runtime.tool_result_pager.store = fail_once
+            return store(*args, **kwargs)
+        self.runtime.result_snapshots.capture_chunks = fail_once
         with tempfile.TemporaryDirectory() as root:
             counter = Path(root) / "counter"
             call = new_tool_call(name="run_shell", args={"cmd": f"printf once >> '{counter}'; head -c 8000 /dev/zero"})
@@ -387,7 +385,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             result = await self.runtime.execute_tool_async(call, budget=budget)
             self.assertTrue(result.ok, result.text)
             self.assertEqual(len(attempts), 2)
-            self.assertIn("result_handle", result.structured)
+            self.assertTrue(result.snapshot_refs)
             self.assertEqual(counter.read_text(), "once")
             await asyncio.gather(*tuple(self.owner.observations.acking.values()))
             self.assertFalse(self.owner.pending)
@@ -398,10 +396,10 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_persistent_pager_failure_is_bounded_and_does_not_require_model_recovery(self):
         attempts = []
-        def fail(**kwargs):
+        def fail(*args, **kwargs):
             attempts.append(kwargs)
             raise OSError("pager unavailable")
-        self.runtime.tool_result_pager.store = fail
+        self.runtime.result_snapshots.capture_chunks = fail
         budget = ToolCallBudget(max_output_chars=100, preview_chars=50)
         call = new_tool_call(name="run_shell", args={"cmd": "printf preserved"})
         result = await self.runtime.execute_tool_async(call, budget=budget)

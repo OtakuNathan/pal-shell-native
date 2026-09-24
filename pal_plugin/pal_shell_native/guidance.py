@@ -6,7 +6,10 @@ RUN_GUIDANCE = ToolGuidance(
     purpose="Run a shell command; return its result or a retained session snapshot.",
     use_when=(
         "Execute commands, builds or tests. Prefer rg for repository text search and rg --files for file"
-        " enumeration; use alternatives only when rg is unavailable or unsuitable. Run tests and builds"
+        " enumeration; use alternatives only when rg is unavailable or unsuitable. Search saved output snapshots with rg; "
+        "use awk/sed and wc for bounded excerpts within unusually long lines that read_file cannot select. "
+        "Output snapshot paths are local to the Pal host, including copies of remote output; inspect them locally (target=0 where available). "
+        "Read the saved file rather than rerunning its producer. Run tests and builds"
         " directly to preserve full output. wait_ms controls response waiting (default five minutes,"
         " one second for a PTY), not process lifetime; timeout_ms sets an optional hard deadline."
         " Use tty=true for interactive terminal input. A session_id identifies retained execution; use status to distinguish running from terminal output."
@@ -46,10 +49,10 @@ SESSION_GUIDANCE = ToolGuidance(
     ),
     do_not_use_when=(
         "Do not invent IDs or use zero. Do not write or resize a non-PTY session, or release a running one."
-        " Delivered terminal output is released automatically; use read_tool_result for its result_handle."
+        " Large output is preserved in an immutable local snapshot; search its file or use read_file."
     ),
     failure_next_steps=(
-        "For invalid_session, consult the previous result/result_handle; reset or consumption"
+        "For invalid_session, consult the previous result/output snapshot; reset or consumption"
         " may have retired it. Do not rerun the command automatically. For live-session precondition errors,"
         " read current status. After uncertain input delivery, inspect output before resending input."
     ),

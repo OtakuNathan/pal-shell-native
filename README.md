@@ -106,7 +106,7 @@ cmake --build build/check --parallel 2
 ctest --test-dir build/check --output-on-failure
 ```
 
-This repository owns the resident, Bunshin, paging and cancellation integration
+This repository owns the resident, Bunshin, output snapshots and cancellation integration
 suite in `tests/pal_host`. CI installs the pinned Pal baseline and this backend.
 For local source checkouts, install Pal's test dependencies and this wheel, then:
 

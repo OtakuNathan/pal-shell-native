@@ -46,8 +46,8 @@ class DirectPort:
             raise RemoteFailure(error['code'], error['message'], effect=error['effect'])
         return reply['result']
 
-    async def list(self, refresh=False):
-        return (await self.call('list', {'refresh': refresh}))['targets']
+    async def list(self, refresh=False, *, target=None):
+        return (await self.call('list', {'refresh': refresh, 'target': target}))['targets']
 
 
 class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -461,8 +461,45 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*tuple(self.runtime.shell_owner.observations.acking.values()))
         self.assertFalse(self.worker.outputs)
 
+    async def test_targeted_list_refreshes_only_selected_target_and_summary_is_compact(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        self.hub.slots[2] = SimpleNamespace(describe=AsyncMock(side_effect=AssertionError("unselected target probed")))
+        try:
+            summary = await self.tool('call_tool', name='list_remote', args={'target': 1, 'refresh': True})
+            self.assertTrue(summary.ok, summary.text)
+            self.assertEqual(summary.structured['view'], 'summary')
+            self.assertEqual(len(summary.structured['targets']), 1)
+            row = summary.structured['targets'][0]
+            self.assertEqual(row['target'], 1)
+            self.assertTrue(row['reachable'])
+            self.assertNotIn('limits', row['dynamic'])
+            self.assertNotIn('memory', row['dynamic'])
+            self.assertIn('observed_at', row['dynamic'])
+            detail = await self.tool('call_tool', name='list_remote', args={'target': 1, 'view': 'detail'})
+            self.assertIn('limits', detail.structured['targets'][0]['dynamic'])
+            self.assertLess(len(summary.text), len(detail.text))
+            local = await self.tool('call_tool', name='list_remote', args={'target': 0, 'refresh': True})
+            self.assertEqual([item['target'] for item in local.structured['targets']], [0])
+            unknown = await self.tool('call_tool', name='list_remote', args={'target': 999, 'refresh': True})
+            self.assertFalse(unknown.ok)
+            self.assertIn('invalid_target', str(unknown))
+            self.hub.slots[2].describe.assert_not_awaited()
+        finally:
+            del self.hub.slots[2]
+
+    async def test_summary_preserves_unknown_offline_observations(self):
+        from pal_shell_native.capabilities import _target_summary
+        row = _target_summary({'target': 1, 'name': 'offline', 'reachable': False,
+                               'probe_error': 'ssh_unavailable', 'dynamic': None,
+                               'start_actions': ['wake'], 'execution': {'blocked': False}})
+        self.assertIsNone(row['dynamic'])
+        self.assertFalse(row['reachable'])
+        self.assertEqual(row['probe_error'], 'ssh_unavailable')
+        self.assertEqual(row['start_actions'], ['wake'])
+
     async def test_metadata_and_runtime_restart_fence(self):
-        data = await self.tool('call_tool', name='list_remote', args={'refresh': True})
+        data = await self.tool('call_tool', name='list_remote', args={'refresh': True, 'view': 'detail'})
         self.assertTrue(data.ok, data.text)
         self.assertEqual(data.structured['targets'][1]['dynamic']['shell']['family'], 'bash')
         result = await self.tool('run_shell', cmd='sleep 30', target=1, wait_ms=0)
@@ -476,7 +513,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(sid, self.owner.shell.tickets)
 
     async def test_unsupported_management_has_no_execution_effect(self):
-        data = await self.tool('call_tool', name='list_remote', args={'refresh': True})
+        data = await self.tool('call_tool', name='list_remote', args={'refresh': True, 'view': 'detail'})
         management = data.structured['targets'][1]['management']
         self.assertFalse(management['start']['supported'])
         self.assertFalse(management['shutdown']['supported'])

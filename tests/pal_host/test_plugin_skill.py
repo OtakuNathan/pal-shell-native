@@ -53,7 +53,8 @@ class NativeSkillTests(unittest.TestCase):
                 handle = NativePlugin(temporary).start(None)
                 core.context.register_module(handle)
                 core.publish_module_capabilities('remote')
-                for query in ('远端接入', '安装remote端', 'remote worker'):
+                for query in ('远端接入', '安装remote端', 'remote worker', '云主机升级',
+                              'Upgrade and deploy pal-shell-native pal-shell-worker to a Linux x86_64 SSH server using the existing systemd user service'):
                     result = SkillSearchTool(service=service).invoke({'query': query, 'top_k': 3})
                     self.assertEqual(result.structured['hits'][0]['skill_id'], 'pal.remote.setup')
                 self.assertIn('plugin-remote-0.4.1.palpkg', service.inject_skill('pal.remote.setup').manual_text)

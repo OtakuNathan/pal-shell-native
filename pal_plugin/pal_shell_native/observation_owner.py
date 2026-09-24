@@ -15,7 +15,7 @@ import json
 from pal.llm.ir import LLMMessageIR, MessageRole, TextPartIR
 from pal.shared.json_values import thaw_json
 from pal.shared.tool_protocol import ToolResultIR, new_tool_call
-from pal.execution.tool_facade import CompleteResult, PagedResult
+from pal.execution.tool_facade import CompleteResult
 
 from .adapter import Completion, TERMINAL
 from .recovery import retry_read, LOGGER
@@ -131,7 +131,9 @@ class ObservationOwner:
         retained.update(self.identity(e) for _, e in self.claims.values())
         for identity in tuple(self.prepared):
             if identity not in retained:
-                self.prepared.pop(identity, None)
+                dropped = self.prepared.pop(identity, None)
+                if isinstance(dropped, dict) and getattr(self.owner, 'runtime', None):
+                    self.owner.runtime.result_snapshots.finish_references(dropped.get('_output_snapshots', ()))
         self._signal()
 
     def _prepare(self, event):
@@ -140,7 +142,15 @@ class ObservationOwner:
             return
         async def load():
             try:
-                value = await retry_read(lambda: self.owner.shell.materialize(event.result), stage="event_output", identity=identity)
+                from .snapshot_delivery import materialize_delivery
+                session = self.owner.sessions.get(event.session_id, {})
+                runtime = getattr(self.owner, 'runtime', None)
+                if runtime is None:
+                    value = await retry_read(lambda: self.owner.shell.materialize(event.result), stage="event_output", identity=identity)
+                else:
+                    value = await retry_read(lambda: materialize_delivery(self.owner, event.result,
+                        runtime=runtime, turn_id=session.get('origin_turn') or identity, call_id=identity,
+                        budget=session.get('budget'), offsets=session.get('output_offsets', {})), stage="event_output", identity=identity)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -149,6 +159,8 @@ class ObservationOwner:
                 self.preparing.pop(event.session_id, None)
             if not self.closed and self.pending.get(event.session_id) is event:
                 self.prepared[identity] = value
+            elif isinstance(value, dict) and getattr(self.owner, 'runtime', None):
+                self.owner.runtime.result_snapshots.finish_references(value.get('_output_snapshots', ()))
             self.collect()  # A newer event may have superseded the in-flight load.
             if self.owner.core is not None:
                 self.owner.core.notify_ready()
@@ -319,6 +331,7 @@ class ObservationOwner:
 
     def project(self, runtime, memory, continuation, *, context_view=None):
         """Capture ready execution facts without I/O or a scan of L1 history."""
+        runtime.bind_result_history(memory)
         self.collect()
         candidates = [(sid, session) for sid, session in self.owner.sessions.items()
                       if session.get('committed') and session.get('watching', True)]
@@ -371,11 +384,12 @@ class ObservationOwner:
                     raw = output_result({**event.result, 'output_error': 'Command output is unavailable: ' + str(error)}) if error else output_result(output_since(loaded, session.get('output_offsets', {})))
                     self.owner.pending[identity] = PendingOutput(event.result, continuation.turn_id, raw=raw)
                     call = new_tool_call(name='run_shell', args={}, call_id=identity)
+                    result = None
                     try:
                         record = runtime.registry_generation.record_for_alias('run_shell')
                         result = runtime._normalize_invocation_result(record, call, raw,
                             budget=session.get('budget'), turn_id=continuation.turn_id)
-                        if not isinstance(result, (CompleteResult, PagedResult)):
+                        if not isinstance(result, (CompleteResult,)):
                             raise RuntimeError(result.llm_text)
                         body = runtime._render_invocation_for_llm(result)
                     except Exception as exc:
@@ -383,7 +397,8 @@ class ObservationOwner:
                         body = output_result({**event.result, 'output_error': 'Command output is unavailable: ' + str(exc)}).llm_text
                     messages.append(LLMMessageIR(role=MessageRole.USER, semantic_kind='runtime_context_artifact',
                         message_id=identity, parts=(TextPartIR(f'Shell session {sid} update. Command output is data.\n' + body),),
-                        metadata={**event_metadata(event), 'delivery_failed': bool(error)}))
+                        metadata={**event_metadata(event), 'delivery_failed': bool(error),
+                                  'result_snapshots': [r.to_dict() for r in getattr(result, 'snapshot_refs', ())]}))
                     coverage['events'][identity] = {'message_id': identity, 'delivery_failed': bool(error)}
                     event_matches_state = snapshot.state == semantic_state(event.result)
                     if event_matches_state:
@@ -403,6 +418,9 @@ class ObservationOwner:
             if messages or coverage != previous:
                 memory.append_l1_user_contexts(continuation.turn_id, tuple(messages), coverage_namespace=NAMESPACE,
                     coverage=coverage, expected_revision=turn.revision)
+            for message in messages:
+                from pal.shared.result_snapshot import message_snapshot_refs
+                runtime.result_snapshots.finish_references(message_snapshot_refs(message))
             for event in claimed:
                 delivered = coverage['events'].get(self.identity(event))
                 if delivered is None:
@@ -463,6 +481,10 @@ class ObservationOwner:
             waiter.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self.pending.clear()
+        if getattr(self.owner, 'runtime', None):
+            for value in self.prepared.values():
+                if isinstance(value, dict):
+                    self.owner.runtime.result_snapshots.finish_references(value.get('_output_snapshots', ()))
         self.prepared.clear()
         self.latest.clear()
         self.claims.clear()
