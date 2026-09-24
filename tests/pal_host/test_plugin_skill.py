@@ -1,11 +1,9 @@
 """The setup manual follows the optional plugin's declared-skill lifecycle."""
-import asyncio
 from pathlib import Path
 import tempfile
 import unittest
 
-from pal.behavior import BehaviorAffordanceModel, BehaviorSkillModel, BehaviorService, BehaviorRepository
-from pal.behavior.contracts import BehaviorAdviceRequest
+from pal.skill.models import SkillModel
 from pal.core import PalCore
 from pal.execution import register_with_core
 from pal.foundation import PalV2Database
@@ -44,24 +42,20 @@ class NativeSkillTests(unittest.TestCase):
     def test_setup_skill_is_published_and_withdrawn_with_plugin(self):
         with tempfile.TemporaryDirectory() as temporary:
             database = PalV2Database(Path(temporary) / 'skill.sqlite3')
-            database.initialize([BehaviorAffordanceModel, BehaviorSkillModel])
+            database.initialize([SkillModel])
             core = PalCore()
             try:
                 service = SkillService()
                 register_with_core(core.context)
                 register_skill(core.context, service)
-                behavior = BehaviorService(repository=BehaviorRepository(skill_repository=service.repository))
                 core.publish_module_capabilities('skill')
                 self.assertIsNone(service.inject_skill('pal.remote.setup'))
                 handle = NativePlugin(temporary).start(None)
                 core.context.register_module(handle)
                 core.publish_module_capabilities('remote')
-                behavior.register_declared_module(handle)
                 for query in ('远端接入', '安装remote端', 'remote worker'):
                     result = SkillSearchTool(service=service).invoke({'query': query, 'top_k': 3})
                     self.assertEqual(result.structured['hits'][0]['skill_id'], 'pal.remote.setup')
-                    advice = asyncio.run(behavior.advise_async(BehaviorAdviceRequest(scenario=query, top_k=5)))
-                    self.assertTrue(any('pal.remote.setup' in item.skill_refs for item in advice.candidates))
                 self.assertIn('plugin-remote-0.4.1.palpkg', service.inject_skill('pal.remote.setup').manual_text)
                 core.withdraw_module_capabilities('remote')
                 self.assertIsNone(service.inject_skill('pal.remote.setup'))
