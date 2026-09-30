@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from pal.bunshin.runner import BunshinRunner, build_slim_bunshin_runtime
+from pal.bunshin.runner_components.invocation import Invocation
 from llm_fixture import NonStreamingLLM
 from pal.bunshin.scoped_execution import BunshinScopedExecutionRuntime
 from pal_shell_native.role_sessions import BunshinShellSessions
@@ -195,22 +196,22 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
             await self.host.before_model(self.memory, "role", cancel)
-        await BunshinRunner._close_execution_work(SimpleNamespace(execution_runtime=self.runtime))
+        await Invocation.close_execution_work(SimpleNamespace(execution_runtime=self.runtime))
         self.assertFalse(path.exists())
         self.assertFalse(self.host.has_work)
 
     async def test_pending_work_defers_restart_and_final_reply(self):
         runner = BunshinRunner(runtime_root=self.root, pack=BunshinInvocationPack(invocation_id="role"), bunshin_id="role", run_id="role",
             write_event=noop, read_decision=noop)
-        runner._execution_sessions = self.host
+        runner.components.tool_session.bind_execution(self.host)
         continuation = TurnContinuation(turn_id="role", program=iter(()), correlation_id="role")
         await self.tool("run_shell", {"cmd": "sleep .02; printf done", "wait_ms": 0})
-        self.assertFalse(runner._continuation_is_restart_safe(continuation, self.memory))
-        self.assertIn("cannot finish", runner._build_bunshin_retry_note(None, [], 2))
+        self.assertFalse(runner.components.session_checkpoints.continuation_is_restart_safe(continuation, self.memory))
+        self.assertIn("cannot finish", runner.components.llm_rounds.build_bunshin_retry_note(None, [], 2))
         await self.observation_ready()
         await self.host.before_model(self.memory, "role", noop)
         await self.ack_ready()
-        self.assertTrue(runner._continuation_is_restart_safe(continuation, self.memory))
+        self.assertTrue(runner.components.session_checkpoints.continuation_is_restart_safe(continuation, self.memory))
 
     async def test_slim_builder_honors_native_backend_and_closes(self):
         self.install_worker(self.root / "slim")
@@ -255,8 +256,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             approval_policy={"high_risk_capabilities": ["op_exec_shell"]}),
             bunshin_id="role-loop", run_id="role-loop", write_event=noop, read_decision=control)
         try:
-            with patch.object(runner, "_request_execution_approval", side_effect=approve):
-                reply = await runner._run_agent_loop(bundle)
+            with patch.object(runner.components.control, "request_execution_approval", side_effect=approve):
+                reply = await runner.components.agent_session.run_agent_loop(bundle)
             self.assertEqual(approvals, 1)
             self.assertEqual(reply, "role complete")
             self.assertEqual(len(requests), 3)
@@ -264,7 +265,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
                                  for m in requests[1].messages))
             self.assertTrue(any(m.semantic_kind == "runtime_context_artifact" and "FULL_ROLE_COMPLETION" in m.text
                                 for m in requests[2].messages))
-            self.assertEqual(runner._observed_tool_call_count, 1)
+            self.assertEqual(runner.components.tool_session.observed_tool_call_count, 1)
             self.assertFalse(bundle.execution_runtime.shell_owner.completion_blocked)
             await asyncio.gather(*tuple(bundle.execution_runtime.shell_owner.observations.acking.values()))
             self.assertFalse(bundle.execution_runtime.shell_owner.has_work)
@@ -318,8 +319,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         from pal.bunshin.v2.submission_drafts import AUTHORING_CONTRACT_VERSION
         from pal.bunshin.v2.work_items import update_checklist_tool_result
         repository = BunshinV2Repository(self.root)
-        repository.ensure_schema()
-        lease = repository.claim_lease("verify", "role", ttl_seconds=60)
+        repository.database.ensure_schema()
+        lease = repository.leases.claim_lease("verify", "role", ttl_seconds=60)
         workspace = {"runtime_root": str(self.root), "repo_path": str(self.root), "invocation_id": "role",
             "review_scratch_dir": str(self.root / "scratch"), "artifact_dir": str(self.root / "artifacts"),
             "artifact_stage_dir": str(self.root / "stage"), "bunshin_v2": {
