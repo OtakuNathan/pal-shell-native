@@ -46,8 +46,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("shell_session", generation.direct_aliases)
         self.assertIn("shell_session", generation.indirect_aliases)
         description = generation.record_for_alias("prototype_run_shell").compiled_description
-        self.assertIn('read_tool(name="shell_session")', description)
-        self.assertIn('call_tool(name="shell_session", args=...)', description)
+        self.assertIn('`shell_session` (indirect)', description)
         schema = await self.tool("read_tool", name="shell_session")
         self.assertTrue(schema.ok, schema.text)
         self.assertIn("terminate", str(schema.structured))

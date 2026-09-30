@@ -224,7 +224,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         generation = self.runtime.registry_generation
         self.assertIn("wait_ms", generation.record_for_alias("run_shell").input_schema["properties"])
         self.assertNotIn("shell_session", generation.direct_aliases)
-        self.assertIn('read_tool(name="shell_session")', generation.record_for_alias("run_shell").compiled_description)
+        self.assertIn('`shell_session` (indirect)', generation.record_for_alias("run_shell").compiled_description)
         started = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})
         self.assertTrue(started.ok, started.text)
         sid = started.structured["session_id"]
@@ -416,7 +416,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
             result = await self.runtime.execute_tool_async(call, budget=budget)
             self.assertTrue(result.ok, result.text)
-            self.assertEqual(len(attempts), 2)
+            # Pal may page the final guidance separately after native output recovery.
+            self.assertGreaterEqual(len(attempts), 2)
             self.assertTrue(result.snapshot_refs)
             self.assertEqual(counter.read_text(), "once")
             await asyncio.gather(*tuple(self.owner.observations.acking.values()))

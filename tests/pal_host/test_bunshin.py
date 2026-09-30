@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from pal.bunshin.runner import BunshinRunner, build_slim_bunshin_runtime
+from llm_fixture import NonStreamingLLM
 from pal.bunshin.scoped_execution import BunshinScopedExecutionRuntime
 from pal_shell_native.role_sessions import BunshinShellSessions
 from pal.core import PalCore
@@ -237,9 +238,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             return "accept"
         async def control(timeout=None):
             self.assertFalse(approving, "cancellation watcher must not compete with approval for Manager replies")
-        class Model:
-            supports_streaming = False
-            async def agenerate(inner, request):
+        class Model(NonStreamingLLM):
+            async def agenerate(inner, request, **options):
                 requests.append(request)
                 if len(requests) == 1:
                     return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
@@ -272,9 +272,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             await bundle.close()
 
     async def test_manager_cancel_interrupts_foreground_shell_before_terminal(self):
-        class Model:
-            supports_streaming = False
-            async def agenerate(inner, request):
+        class Model(NonStreamingLLM):
+            async def agenerate(inner, request, **options):
                 return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
                     "cmd": "sleep 60"})], finish_reason="tool_calls")
         self.install_worker(self.root / "cancel-loop")

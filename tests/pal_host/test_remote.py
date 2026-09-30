@@ -371,7 +371,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(reply.ok, reply.text)
             self.assertIn('installed-palpkg', reply.text)
             await asyncio.gather(*tuple(self.runtime.shell_owner.observations.acking.values()))
-            reloaded = await self.tool('call_tool', name='plugin_attach', args={'name': 'remote'})
+            reloaded = await self.tool('call_tool', name='plugin_reattach', args={'name': 'remote'})
             self.assertTrue(reloaded.ok, reloaded.text)
             self.assertIsNot(host.generations['remote'].instance, plugin)
             self.assertIsNotNone(self.worker.server)
