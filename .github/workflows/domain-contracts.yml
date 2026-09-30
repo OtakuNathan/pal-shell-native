@@ -3,7 +3,7 @@ on:
   pull_request:
   workflow_dispatch:
   push:
-    branches: [refactor/domain-contracts, refactor/bunshin-ownership]
+    branches: [main, refactor/domain-contracts, refactor/bunshin-ownership]
 permissions:
   contents: read
 jobs:
@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: 994401cf57582f534f386617bdb0e6082040dd54
+          ref: 915140659ce71148438016650406c99af095bffe
           path: .pal-host
       - uses: actions/setup-python@v5
         with:
