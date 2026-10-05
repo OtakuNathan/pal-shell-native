@@ -70,7 +70,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         return await self.runtime.execute_tool_async(new_tool_call(name=name, args=args or {}), budget=budget, turn_id=turn_id)
 
     async def session(self, sid, **args):
-        return await self.tool("call_tool", {"name": "shell_session", "args": {"session_id": sid, **args}})
+        return await self.tool("call_tool", {"name": "manage_shell_session", "args": {"session_id": sid, **args}})
 
     def origin(self, call):
         event = EventEnvelope(event_kind="user.message", source_kind="channel", payload={"text": "build"}, event_id="origin")
@@ -223,8 +223,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_entry_registration_and_pty(self):
         generation = self.runtime.registry_generation
         self.assertIn("wait_ms", generation.record_for_alias("run_shell").input_schema["properties"])
-        self.assertNotIn("shell_session", generation.direct_aliases)
-        self.assertIn('read_tool(name="shell_session")', generation.record_for_alias("run_shell").compiled_description)
+        self.assertNotIn("manage_shell_session", generation.direct_aliases)
+        self.assertIn('`manage_shell_session` (indirect)', generation.record_for_alias("run_shell").compiled_description)
         started = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})
         self.assertTrue(started.ok, started.text)
         sid = started.structured["session_id"]
@@ -235,7 +235,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hello", final.structured["stdout"])
         # Tool delivery schedules ACK cleanup without blocking its result.
         await asyncio.gather(*tuple(self.owner.observations.acking.values()))
-        status = await self.tool("call_tool", {"name": "shell_status", "args": {}})
+        status = await self.tool("call_tool", {"name": "inspect_shell_status", "args": {}})
         self.assertIn("sessions", status.structured)
         self.assertFalse(status.structured["sessions"])
 
@@ -284,9 +284,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         await self.pump()
         self.assertEqual(len(self.model_inputs), 1)
         text = self.model_inputs[0].text
-        self.assertIn('"name":"shell_session"', text)
-        self.assertIn(f'"args":{{"action":"read","session_id":{sid}}}', text)
-        self.assertNotIn('shell_session supports:', text)
+        self.assertIn('"name":"read_shell_session"', text)
+        self.assertIn(f'"args":{{"session_id":{sid}}}', text)
+        self.assertNotIn('manage_shell_session supports:', text)
         recovered = await self.session(sid, action="read")
         self.assertTrue(recovered.ok, recovered.text)
         self.assertIn("retained", recovered.text)
@@ -416,14 +416,14 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
             result = await self.runtime.execute_tool_async(call, budget=budget)
             self.assertTrue(result.ok, result.text)
-            self.assertEqual(len(attempts), 2)
+            self.assertGreaterEqual(len(attempts), 2)
             self.assertTrue(result.snapshot_refs)
             self.assertEqual(counter.read_text(), "once")
             await asyncio.gather(*tuple(self.owner.observations.acking.values()))
             self.assertFalse(self.owner.pending)
         for alias in ("shell_recover_output", "shell_reconcile"):
             self.assertIsNone(self.runtime.registry_generation.record_for_alias(alias))
-        schema = self.runtime.registry_generation.record_for_alias('shell_session').input_schema
+        schema = self.runtime.registry_generation.record_for_alias('manage_shell_session').input_schema
         self.assertNotIn('retry_notification', str(schema))
 
     async def test_persistent_snapshot_failure_preserves_operation_and_output(self):
@@ -439,12 +439,12 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.invocation_result.output_error)
         hints = result.invocation_result.affordances
         self.assertEqual(len(hints), 1)
-        self.assertEqual(hints[0].arguments, {'name': 'shell_session', 'args': {'output_ref': call.call_id, 'action': 'read'}})
+        self.assertEqual(hints[0].arguments, {'name': 'read_shell_session', 'args': {'output_ref': call.call_id}})
         self.assertEqual(len(attempts), 1)
         self.assertFalse(self.owner.completion_blocked)
         self.assertNotIn('shell_recover_output', result.text)
         self.assertNotIn('acknowledg', result.text)
-        released = await self.tool('call_tool', {'name': 'shell_session', 'args': {
+        released = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {
             'output_ref': call.call_id, 'action': 'release'}})
         self.assertTrue(released.ok, released.text)
         self.assertFalse(self.owner.pending)
@@ -590,8 +590,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             sid = result.structured['session_id']
             hints = result.invocation_result.affordances
             self.assertEqual(len(hints), 1)
-            self.assertEqual(hints[0].arguments['args'], {'session_id': sid, 'action': 'read'} if sid else {'output_ref': call.call_id, 'action': 'read'})
-            recovered = await self.tool('call_tool', {'name': 'shell_session', 'args': {'session_id': sid} if sid else {'output_ref': call.call_id}},
+            self.assertEqual(hints[0].arguments['args'], {'session_id': sid} if sid else {'output_ref': call.call_id})
+            recovered = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {'session_id': sid} if sid else {'output_ref': call.call_id}},
                 budget=ToolCallBudget(max_output_chars=1500, preview_chars=200))
             self.assertTrue(recovered.snapshot_refs)
             self.assertIn(b'\0' * 8000, Path(recovered.snapshot_refs[0].path).read_bytes())

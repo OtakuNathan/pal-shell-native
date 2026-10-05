@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from pal.execution.tool_facade import StrictToolModel, ToolAffordance
 
@@ -19,7 +19,29 @@ class RunInput(StrictToolModel):
     timeout_ms: int | None = Field(default=None, ge=1, le=2147483647)
 
 
+def session_argument_schema():
+    controls = {"wait_ms", "extend_by_ms", "text", "rows", "columns"}
+    required = {"write": {"text"}, "resize": {"rows", "columns"}, "watch": {"wait_ms"}, "extend": {"extend_by_ms"}}
+    rules = []
+    for action in ("read", "write", "resize", "terminate", "release", "watch", "extend", "unwatch"):
+        fields = required.get(action, set())
+        allowed = fields | ({"wait_ms"} if action == "read" else set()) | ({"extend_by_ms"} if action == "watch" else set())
+        properties = {name: {"type": "null"} for name in sorted(controls - allowed)}
+        for name in sorted(fields):
+            properties[name] = {"not": {"type": "null"}}
+        if action == "watch":
+            properties["wait_ms"] = {"type": "integer", "minimum": 1}
+        if action == "extend":
+            properties["extend_by_ms"] = {"type": "integer", "minimum": 1}
+        condition = {"properties": {"action": {"const": action}}}
+        if action != "read":
+            condition["required"] = ["action"]
+        rules.append({"if": condition, "then": {"required": sorted(fields), "properties": properties}})
+    return {"allOf": rules}
+
+
 class SessionInput(StrictToolModel):
+    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra=session_argument_schema())
     session_id: int = Field(gt=0, le=9223372036854775807)
     action: Literal["read", "write", "resize", "terminate", "release", "watch", "extend", "unwatch"] = "read"
     wait_ms: int | None = Field(default=None, ge=0, le=300000)
@@ -54,12 +76,12 @@ def session_affordances(result: dict, *, output_ref: str = "") -> list[ToolAffor
         return []
     sid = result.get("session_id", 0)
     if sid:
-        args = {"session_id": sid, "action": "read"}
+        args = {"session_id": sid}
     elif output_ref:
-        args = {"output_ref": output_ref, "action": "read"}
+        args = {"output_ref": output_ref}
     else:
         return []
     return [ToolAffordance(
-        tool="call_tool", arguments={"name": "shell_session", "args": args},
+        tool="call_tool", arguments={"name": "read_shell_session", "args": args},
         reason="After resolving output storage/read failure, export the retained result without rerunning the command.",
     )]

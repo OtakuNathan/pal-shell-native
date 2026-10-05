@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from pal.bunshin.runner import BunshinRunner, build_slim_bunshin_runtime
+from pal.bunshin.runner_components.invocation import Invocation
 from pal.bunshin.scoped_execution import BunshinScopedExecutionRuntime
 from pal_shell_native.role_sessions import BunshinShellSessions
 from pal.core import PalCore
@@ -26,6 +27,38 @@ from pal.llm import generation_result_from_values
 from pal.memory import MemoryService
 from pal.shared import BunshinInvocationPack
 from pal.shared.tool_protocol import new_tool_call, ToolResultIR
+
+
+from pal.llm.contracts import LLMPreflightAdvice
+
+
+class NonStreamingModel:
+    projection_port = None
+    last_endpoint_id = None
+    last_model_id = None
+    last_projection_receipt = None
+
+    def supports_streaming(self, request=None):
+        return False
+
+    def resolve_endpoint_facts(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
+        return {"supports_streaming": self.supports_streaming()}
+
+    def resolve_max_output_tokens(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
+        return None
+
+    def prompt_cache_eligible_anchor_request(self, *, logical_scope_id="pal:resident", endpoint_id=""):
+        return self.prompt_cache_confirmed_anchor_request(logical_scope_id=logical_scope_id, endpoint_id=endpoint_id)
+
+    def prompt_cache_confirmed_anchor_request(self, *, logical_scope_id="pal:resident", endpoint_id=""):
+        return {}
+
+    def preflight(self, request):
+        return LLMPreflightAdvice(status="ready")
+
+    async def apreflight(self, request):
+        return self.preflight(request)
+
 
 
 async def noop(*args, **kwargs):
@@ -81,7 +114,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("wait_ms", generation.record_for_alias("run_shell").input_schema["properties"])
         self.assertIn("tty", generation.record_for_alias("run_shell").input_schema["properties"])
         self.assertIn("wait_ms controls response waiting", generation.record_for_alias("run_shell").binding.descriptor.guidance.use_when)
-        self.assertNotIn("shell_session", generation.direct_aliases)
+        self.assertNotIn("manage_shell_session", generation.direct_aliases)
         call, result = await self.tool("run_shell", {"cmd": "sleep .02; printf role-done", "wait_ms": 0}, commit=False)
         self.assertTrue(result.ok, result.text)
         sid = result.structured["session_id"]
@@ -118,7 +151,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         _, result = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})
         self.assertTrue(result.ok, result.text)
         await asyncio.wait_for(self.host.before_model(self.memory, "role", noop), .5)
-        _, written = await self.tool("call_tool", {"name": "shell_session", "args": {
+        _, written = await self.tool("call_tool", {"name": "manage_shell_session", "args": {
             "session_id": result.structured["session_id"], "action": "write", "text": "hello-role\n"}})
         self.assertTrue(written.ok, written.text)
         async def completion_ready():
@@ -134,7 +167,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         _, result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
         sid = result.structured["session_id"]
         async def watch(wait_ms):
-            _, response = await self.tool("call_tool", {"name": "shell_session", "args": {
+            _, response = await self.tool("call_tool", {"name": "manage_shell_session", "args": {
                 "session_id": sid, "action": "watch", "wait_ms": wait_ms}})
             self.assertTrue(response.ok, response.text)
         async def ready():
@@ -165,7 +198,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_shell_permission_does_not_grant_session_controls(self):
         scope = BunshinScopedExecutionRuntime(self.runtime, ["op_file_write"], {"invocation_id": "other"})
-        self.assertIsNone(scope.registry_generation.record_for_alias("shell_session"))
+        self.assertIsNone(scope.registry_generation.record_for_alias("manage_shell_session"))
 
     async def test_failed_terminal_delivery_keeps_output_for_read_retry(self):
         _, result = await self.tool("run_shell", {"cmd": "sleep .02; printf recovery", "wait_ms": 0})
@@ -180,7 +213,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(sid, self.host.owner.sessions)
         self.assertTrue(self.host.owner.pending)
         self.assertFalse(self.host.has_work)
-        _, recovered = await self.tool("call_tool", {"name": "shell_session", "args": {"session_id": sid}})
+        _, recovered = await self.tool("call_tool", {"name": "manage_shell_session", "args": {"session_id": sid}})
         self.assertIn("recovery", recovered.text)
         await asyncio.gather(*tuple(self.host.owner.observations.acking.values()))
         self.assertNotIn(sid, self.host.owner.sessions)
@@ -194,22 +227,22 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
             await self.host.before_model(self.memory, "role", cancel)
-        await BunshinRunner._close_execution_work(SimpleNamespace(execution_runtime=self.runtime))
+        await Invocation.close_execution_work(SimpleNamespace(execution_runtime=self.runtime))
         self.assertFalse(path.exists())
         self.assertFalse(self.host.has_work)
 
     async def test_pending_work_defers_restart_and_final_reply(self):
         runner = BunshinRunner(runtime_root=self.root, pack=BunshinInvocationPack(invocation_id="role"), bunshin_id="role", run_id="role",
             write_event=noop, read_decision=noop)
-        runner._execution_sessions = self.host
+        runner.components.tool_session.execution_sessions = self.host
         continuation = TurnContinuation(turn_id="role", program=iter(()), correlation_id="role")
         await self.tool("run_shell", {"cmd": "sleep .02; printf done", "wait_ms": 0})
-        self.assertFalse(runner._continuation_is_restart_safe(continuation, self.memory))
-        self.assertIn("cannot finish", runner._build_bunshin_retry_note(None, [], 2))
+        self.assertFalse(runner.components.session_checkpoints.continuation_is_restart_safe(continuation, self.memory))
+        self.assertIn("cannot finish", runner.components.llm_rounds.build_bunshin_retry_note(None, [], 2))
         await self.observation_ready()
         await self.host.before_model(self.memory, "role", noop)
         await self.ack_ready()
-        self.assertTrue(runner._continuation_is_restart_safe(continuation, self.memory))
+        self.assertTrue(runner.components.session_checkpoints.continuation_is_restart_safe(continuation, self.memory))
 
     async def test_slim_builder_honors_native_backend_and_closes(self):
         self.install_worker(self.root / "slim")
@@ -237,9 +270,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             return "accept"
         async def control(timeout=None):
             self.assertFalse(approving, "cancellation watcher must not compete with approval for Manager replies")
-        class Model:
-            supports_streaming = False
-            async def agenerate(inner, request):
+        class Model(NonStreamingModel):
+            async def agenerate(inner, request, **options):
                 requests.append(request)
                 if len(requests) == 1:
                     return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
@@ -255,8 +287,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             approval_policy={"high_risk_capabilities": ["op_exec_shell"]}),
             bunshin_id="role-loop", run_id="role-loop", write_event=noop, read_decision=control)
         try:
-            with patch.object(runner, "_request_execution_approval", side_effect=approve):
-                reply = await runner._run_agent_loop(bundle)
+            with patch.object(runner.components.control, "request_execution_approval", side_effect=approve):
+                reply = await runner.components.agent_session.run_agent_loop(bundle)
             self.assertEqual(approvals, 1)
             self.assertEqual(reply, "role complete")
             self.assertEqual(len(requests), 3)
@@ -264,7 +296,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
                                  for m in requests[1].messages))
             self.assertTrue(any(m.semantic_kind == "runtime_context_artifact" and "FULL_ROLE_COMPLETION" in m.text
                                 for m in requests[2].messages))
-            self.assertEqual(runner._observed_tool_call_count, 1)
+            self.assertEqual(runner.components.tool_session.observed_tool_call_count, 1)
             self.assertFalse(bundle.execution_runtime.shell_owner.completion_blocked)
             await asyncio.gather(*tuple(bundle.execution_runtime.shell_owner.observations.acking.values()))
             self.assertFalse(bundle.execution_runtime.shell_owner.has_work)
@@ -272,9 +304,8 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             await bundle.close()
 
     async def test_manager_cancel_interrupts_foreground_shell_before_terminal(self):
-        class Model:
-            supports_streaming = False
-            async def agenerate(inner, request):
+        class Model(NonStreamingModel):
+            async def agenerate(inner, request, **options):
                 return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
                     "cmd": "sleep 60"})], finish_reason="tool_calls")
         self.install_worker(self.root / "cancel-loop")
@@ -295,7 +326,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             workspace={"repo_path": str(self.root)}, metadata={"max_tool_rounds": 3}),
             bunshin_id="cancel-loop", run_id="cancel-loop", write_event=event, read_decision=control,
             runtime_bundle=bundle)
-        self.assertEqual(await asyncio.wait_for(runner.run(), 5), 0)
+        self.assertEqual(await asyncio.wait_for(runner.run(), 5), 0, events)
         self.assertTrue(owner.closed)
         self.assertTrue(any(e.get("event_kind") == "terminal" for e in events), events)
 
@@ -306,7 +337,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         core.publish_module_capabilities("execution")
         try:
             _, result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
-            read = await other.execute_tool_async(new_tool_call(name="call_tool", args={"name": "shell_session", "args": {
+            read = await other.execute_tool_async(new_tool_call(name="call_tool", args={"name": "manage_shell_session", "args": {
                 "session_id": result.structured["session_id"]}}), turn_id="other")
             self.assertFalse(read.ok)
             self.assertIn("invalid_session", read.llm_text)
@@ -319,8 +350,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         from pal.bunshin.v2.submission_drafts import AUTHORING_CONTRACT_VERSION
         from pal.bunshin.v2.work_items import update_checklist_tool_result
         repository = BunshinV2Repository(self.root)
-        repository.ensure_schema()
-        lease = repository.claim_lease("verify", "role", ttl_seconds=60)
+        lease = repository.leases.claim_lease("verify", "role", ttl_seconds=60)
         workspace = {"runtime_root": str(self.root), "repo_path": str(self.root), "invocation_id": "role",
             "review_scratch_dir": str(self.root / "scratch"), "artifact_dir": str(self.root / "artifacts"),
             "artifact_stage_dir": str(self.root / "stage"), "bunshin_v2": {
@@ -339,7 +369,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await proceed.wait()
             return await original_run(*args, **{**kwargs, "wait_ms": 0})
-        call = new_tool_call(name="verification_run_compile_check", args={"name": "compile", "command": "sleep .02; printf verified", "path": "src/test.c"})
+        call = new_tool_call(name="run_verification_compile_check", args={"name": "compile", "command": "sleep .02; printf verified", "path": "src/test.c"})
         with patch.object(self.host.owner.shell, "run", side_effect=background):
             task = asyncio.create_task(scope.execute_tool_async(call, turn_id="role"))
             try:
@@ -372,17 +402,29 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         hidden.write_text("must stay hidden")
         pack = BunshinInvocationPack(invocation_id="sandbox", workspace={"repo_path": str(repo)}, metadata={
             "sandbox": {"enabled": True, "backend": "bwrap", "run_id": "sandbox", "scratch_dir": str(self.root / "scratch")}})
-        script = """import asyncio, os
+        script = """import asyncio, os, sys
+from importlib.abc import MetaPathFinder
+class NoRPC(MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'pal_shell_worker', '_pal_shell_rpc'}:
+            raise AssertionError('Local role imported remote dependency: ' + fullname)
+sys.meta_path.insert(0, NoRPC())
 from pal.core import PalCore
-from pal_shell_native.adapter import ShellRuntime
+from pal.execution import register_with_core
+from pal_shell_native.plugin import activate_role
 async def main():
-    runtime = ShellRuntime()
+    core = PalCore()
+    register_with_core(core.context)
+    activate_role(core.context)
+    runtime = core.context.execution_runtime
     try:
-        result = await runtime.run('printf SANDBOX_NATIVE_OK')
+        runtime.build_introspection_provider()
+        result = await runtime.shell_owner.shell.run('printf SANDBOX_NATIVE_OK')
         print(result['stdout'])
         assert not os.path.exists(os.environ['PAL_TEST_HIDDEN'])
     finally:
-        await runtime.close()
+        await runtime.shutdown_async()
+        core.close()
 asyncio.run(main())
 """
         self.install_worker(self.root)

@@ -1,55 +1,17 @@
 from __future__ import annotations
 
+from pal.shared.diagnostics import exception_diagnostic, diagnostic_text
+
 import asyncio
-from dataclasses import dataclass, field
+import os
 from pathlib import Path
-import re
 import tempfile
 
 from pal.foundation.fd_lease import FdLease, FdCloseOutcome, FdLeaseInvariantError
+from pal_shell_contracts import Target  # Compatibility export for existing callers.
 from pal_shell_worker.client import Connection, load_private_key
 from pal_shell_worker.protocol import RemoteError
 from .admission import RequestAdmission
-
-
-@dataclass(frozen=True)
-class Target:
-    target: int
-    name: str
-    worker_id: str
-    client_id: str
-    client_key: str
-    socket_path: str
-    shortcut: str = ''
-    ssh_host: str = ''
-    ssh_port: int = 22
-    ssh_identity: str = ''
-    known_hosts: str = ''
-    static: dict = field(default_factory=dict)
-    start_actions: dict = field(default_factory=dict)
-    worker_port: int = 0
-
-    def __post_init__(self):
-        if type(self.target) is not int or self.target <= 0:
-            raise ValueError('Remote targets must be positive integers; zero is always local')
-        if self.shortcut and not re.fullmatch(r'[A-Za-z0-9_-]{1,54}', self.shortcut):
-            raise ValueError('Shortcut must be 1–54 letters, digits, underscores or hyphens')
-        if type(self.ssh_port) is not int or not 1 <= self.ssh_port <= 65535:
-            raise ValueError('Invalid SSH port')
-        if self.ssh_host:
-            if not re.fullmatch(r'[A-Za-z0-9_.@-]+', self.ssh_host) or self.ssh_host.startswith('-'):
-                raise ValueError('Invalid SSH destination')
-            if not self.ssh_identity or not self.known_hosts:
-                raise ValueError('SSH requires explicit identity and known_hosts files')
-        if type(self.worker_port) is not int or not 0 <= self.worker_port <= 65535:
-            raise ValueError('Invalid worker loopback port')
-        if self.worker_port and not self.ssh_host:
-            raise ValueError('Worker TCP transport requires authenticated SSH forwarding')
-        if not self.worker_port and (not Path(self.socket_path).is_absolute() or ':' in self.socket_path or '\n' in self.socket_path):
-            raise ValueError('Worker socket must be an absolute forwarding-safe path')
-        for argv in self.start_actions.values():
-            if not isinstance(argv, list) or not argv or not Path(argv[0]).is_absolute() or not all(isinstance(x, str) for x in argv):
-                raise ValueError('Start actions must reference existing executables with literal argv')
 
 
 async def close_connection(connection):
@@ -73,11 +35,58 @@ class RemoteSlot:
         self.lease = None
         self.epoch = None
         self.tunnel = None
+        self.tunnel_diagnostics = None
+        self.tunnel_stderr_transport = None
+        self.tunnel_stderr = bytearray()
         self.directory = None
         self.cached = None
         self.last_error = ''
         self.expected_offline = False
         self.closed = False
+
+    @staticmethod
+    async def _drain_stderr(stream, tail):
+        if stream is None:
+            return
+        while chunk := await stream.read(4096):
+            tail.extend(chunk)
+            del tail[:-8192]
+
+    async def _spawn_with_stderr(self, argv, tail):
+        # Own the pipe separately from the subprocess transport. A descendant
+        # inheriting stderr must not hold process.wait() or owner shutdown open.
+        read_fd, write_fd = os.pipe()
+        reader = asyncio.StreamReader()
+        source = os.fdopen(read_fd, 'rb', buffering=0)
+        try:
+            with os.fdopen(write_fd, 'wb', buffering=0) as sink:
+                transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+                    lambda: asyncio.StreamReaderProtocol(reader), source)
+                try:
+                    process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL, stderr=sink)
+                except BaseException:
+                    transport.close()
+                    raise
+        except BaseException:
+            source.close()
+            raise
+        drain = asyncio.create_task(self._drain_stderr(reader, tail))
+        return process, transport, drain
+
+    @staticmethod
+    async def _finish_stderr(transport, drain):
+        if drain is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(drain), .2)
+        except TimeoutError:
+            pass
+        finally:
+            transport.close()
+            # Diagnostic cleanup cannot replace the operation's failure. Closing
+            # the owned transport feeds EOF even while descendants retain stderr.
+            await asyncio.gather(drain, return_exceptions=True)
 
     async def _disconnect(self):
         if self.lease:
@@ -94,6 +103,10 @@ class RemoteSlot:
                 except TimeoutError:
                     self.tunnel.kill()
                     await self.tunnel.wait()
+            if self.tunnel_diagnostics is not None:
+                await self._finish_stderr(self.tunnel_stderr_transport, self.tunnel_diagnostics)
+                self.tunnel_diagnostics = None
+                self.tunnel_stderr_transport = None
             self.tunnel = None
         if self.directory:
             self.directory.cleanup()
@@ -107,19 +120,23 @@ class RemoteSlot:
         if c.ssh_host:
             self.directory = tempfile.TemporaryDirectory(prefix='pal-remote-')
             path = str(Path(self.directory.name) / 'rpc.sock')
-            self.tunnel = await asyncio.create_subprocess_exec(
+            self.tunnel_stderr.clear()
+            self.tunnel, self.tunnel_stderr_transport, self.tunnel_diagnostics = await self._spawn_with_stderr([
                 'ssh', '-N', '-T', '-p', str(c.ssh_port), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                 '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no',
                 '-o', 'KbdInteractiveAuthentication=no', '-o', 'ExitOnForwardFailure=yes',
                 '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2',
                 '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
                 '-o', 'UserKnownHostsFile=' + c.known_hosts, '-i', c.ssh_identity,
-                '-L', path + ':' + ('127.0.0.1:' + str(c.worker_port) if c.worker_port else c.socket_path), c.ssh_host,
-                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                '-L', path + ':' + ('127.0.0.1:' + str(c.worker_port) if c.worker_port else c.socket_path), c.ssh_host], self.tunnel_stderr)
             async with asyncio.timeout(8):
                 while not Path(path).exists():
                     if self.tunnel.returncode is not None:
-                        raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; inspect configured identity and host enrollment')
+                        await self._finish_stderr(self.tunnel_stderr_transport, self.tunnel_diagnostics)
+                        self.tunnel_diagnostics = None
+                        self.tunnel_stderr_transport = None
+                        raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; cause: ' +
+                            diagnostic_text(self.tunnel_stderr.decode('utf-8', errors='replace'), tail=True))
                     await asyncio.sleep(.05)
         connection = Connection(path, client_id=c.client_id, private_key=load_private_key(c.client_key),
                                 worker_id=c.worker_id, executor=self.executor)
@@ -210,7 +227,7 @@ class RemoteSlot:
                 except (OSError, TimeoutError, ValueError) as exc:
                     await self._disconnect()
                     raise RemoteError('connection_unavailable',
-                        'Connection setup failed before command submission; inspect SSH and enrolled identity') from exc
+                        'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_diagnostic(exc) + '; SSH stderr: ' + diagnostic_text(self.tunnel_stderr.decode('utf-8', errors='replace'), tail=True)) from exc
                 except BaseException:
                     await self._disconnect()
                     raise
@@ -269,16 +286,25 @@ class RemoteSlot:
             argv = self.config.start_actions.get(action)
             if argv is None:
                 raise RemoteError('unsupported_start', 'No such configured start action')
-            process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            tail = bytearray()
+            process, transport, drain = await self._spawn_with_stderr(argv, tail)
             try:
                 code = await asyncio.wait_for(process.wait(), 30)
             except TimeoutError:
                 process.kill()
                 await process.wait()
-                raise RemoteError('start_unknown', 'Start action timed out; inspect target before retrying', effect='unknown')
+                raise RemoteError('start_unknown', 'Start action timed out; inspect target before retrying; stderr: ' +
+                    diagnostic_text(tail.decode('utf-8', errors='replace'), tail=True), effect='unknown')
+            except BaseException:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
+            finally:
+                await self._finish_stderr(transport, drain)
             self.expected_offline = False
-            return {'status': 'start_action_completed', 'returncode': code, 'target': self.config.target}
+            return {'status': 'start_action_completed', 'returncode': code, 'target': self.config.target,
+                    'readiness': 'unverified', 'stderr': diagnostic_text(tail.decode('utf-8', errors='replace'), tail=True)}
 
     async def close(self):
         self.closed = True

@@ -39,19 +39,18 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         return await self.runtime.execute_tool_async(new_tool_call(name=alias, args=args), turn_id="origin")
 
     async def session(self, sid, action="read", **args):
-        return await self.tool("call_tool", name="shell_session", args={"session_id": sid, "action": action, **args})
+        return await self.tool("call_tool", name="manage_shell_session", args={"session_id": sid, "action": action, **args})
 
     async def test_session_schema_is_discovered_from_entry_without_resident_expansion(self):
         generation = self.runtime.registry_generation
-        self.assertNotIn("shell_session", generation.direct_aliases)
-        self.assertIn("shell_session", generation.indirect_aliases)
+        self.assertNotIn("manage_shell_session", generation.direct_aliases)
+        self.assertIn("manage_shell_session", generation.indirect_aliases)
         description = generation.record_for_alias("prototype_run_shell").compiled_description
-        self.assertIn('read_tool(name="shell_session")', description)
-        self.assertIn('call_tool(name="shell_session", args=...)', description)
-        schema = await self.tool("read_tool", name="shell_session")
+        self.assertIn('`manage_shell_session` (indirect)', description)
+        schema = await self.tool("read_tool", name="manage_shell_session")
         self.assertTrue(schema.ok, schema.text)
         self.assertIn("terminate", str(schema.structured))
-        direct = await self.tool("shell_session", session_id=1)
+        direct = await self.tool("manage_shell_session", session_id=1)
         self.assertFalse(direct.ok)
         oneshot = await self.tool("prototype_run_shell", cmd="true")
         self.assertFalse(oneshot.invocation_result.affordances)
@@ -72,7 +71,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.01)
             await asyncio.wait_for(wait(), 5)
             result = await self.runtime.execute_tool_async(new_tool_call(name="call_tool", args={
-                "name": "shell_session", "args": {"session_id": sid, "action": "read"}}),
+                "name": "manage_shell_session", "args": {"session_id": sid, "action": "read"}}),
                 turn_id="origin", budget=ToolCallBudget(max_output_chars=1000, preview_chars=500))
             self.assertTrue(result.ok, result.text)
             self.assertTrue(result.snapshot_refs)
@@ -112,7 +111,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                      {"session_id": sid, "action": "read", "text": "ignored?"},
                      {"session_id": sid, "action": "resize", "rows": 0, "columns": 80},
                      {"session_id": sid, "wait_ms": 300001}):
-            rejected = await self.tool("call_tool", name="shell_session", args=args)
+            rejected = await self.tool("call_tool", name="manage_shell_session", args=args)
             self.assertFalse(rejected.ok)
         for action, args in (("write", {"text": "no stdin"}), ("release", {})):
             rejected = await self.session(sid, action, **args)
@@ -147,7 +146,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         def fail(*args, **kwargs):
             raise OSError("pager unavailable")
         self.runtime.result_snapshots.capture = fail
-        call = new_tool_call(name="call_tool", args={"name": "shell_session", "args": {"session_id": sid}})
+        call = new_tool_call(name="call_tool", args={"name": "manage_shell_session", "args": {"session_id": sid}})
         budget = ToolCallBudget(max_output_chars=1000, preview_chars=500)
         result = await self.runtime.execute_tool_async(call, budget=budget, turn_id="origin")
         self.assertTrue(result.ok)

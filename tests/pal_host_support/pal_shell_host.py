@@ -46,7 +46,7 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
     async def _call_record_async(self, record, binding, call, validated, turn_id, budget, allow_tools):
         arguments = record, binding, call, validated, turn_id, budget, allow_tools
         try:
-            if record.alias in {"prototype_run_shell", "shell_session"}:
+            if record.alias in {"prototype_run_shell", "manage_shell_session"}:
                 return await super()._call_record_async(*arguments)
             async with self.shell.tool_admission(record.execution.effect_kind.value):
                 return await super()._call_record_async(*arguments)
@@ -57,14 +57,14 @@ class PrototypeExecutionRuntime(ExecutionRuntime):
                 "result_capacity": "shell_result_capacity",
                 "invalid_session": "invalid_session",
                 "stdin_closed": "stdin_closed",
-            }.get(native_code, "shell_session_rejected" if record.alias == "shell_session" else "shell_rejected")
+            }.get(native_code, "shell_session_rejected" if record.alias == "manage_shell_session" else "shell_rejected")
             raise ToolRejectedError(str(exc) + " " + record.guidance.failure_next_steps, error_code=code) from exc
 
     def _normalize_invocation_result(self, record, call, raw, **kwargs):
         result = super()._normalize_invocation_result(record, call, raw, **kwargs)
         # Keep live controls outside the paged body: page one may contain only stdout.
         payload = raw.structured if isinstance(raw, CapabilityResult) else getattr(raw, "output", None)
-        if (record.alias in {"prototype_run_shell", "shell_session"}
+        if (record.alias in {"prototype_run_shell", "manage_shell_session"}
                 and isinstance(payload, dict) and isinstance(result, CompleteResult)):
             result = result.model_copy(update={"affordances": result.affordances + session_affordances(payload)})
         return result
@@ -147,7 +147,7 @@ class ShellProvider:
 
     @capability_action(
         namespace="op", scope="module", family="exec", action_name="session",
-        aliases=("shell_session",), InputModel=SessionInput, OutputModel=StructuredToolOutput,
+        aliases=("manage_shell_session",), InputModel=SessionInput, OutputModel=StructuredToolOutput,
         execution=INDIRECT_CONTROL, async_handler_name="session_async", guidance=SESSION_GUIDANCE,
     )
     def session(self, call):

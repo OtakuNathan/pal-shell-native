@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Literal
+from dataclasses import replace
 import asyncio
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from pal.execution.capabilities import ExecutionIntrospectionProvider
 from pal.execution.contracts import CapabilityResult
@@ -11,18 +12,18 @@ from pal.execution.tool_semantics import DIRECT_CONTROL, INDIRECT_CONTROL, INDIR
 from pal.shared.result_rendering import render_structured_for_llm
 from pal.shared import RuntimeStatus, capability_action
 
-from .tools import RunInput, SessionInput
+from .tools import RunInput, SessionInput, session_argument_schema
 from .guidance import REMOTE_RUN_GUIDANCE, RESIDENT_SESSION_GUIDANCE
 
 
 class NativeRunInput(RunInput):
     target: int = Field(default=0, ge=0, strict=True, description="Execution target; 0 is local. Discover configured remote target IDs with list_remote when needed; reuse a known target. Paths belong to this target.")
-    sudo: bool = False
+    sudo: bool = Field(default=False, description="Remote targets only; requires tty=false and approval for a supported management command.")
 
 
 class RemoteStartInput(StrictToolModel):
     target: int = Field(gt=0, strict=True)
-    action: str = Field(min_length=1)
+    action: str = Field(min_length=1, description="Exact start action advertised for this target by list_remote.")
 
 
 class RemotePowerInput(StrictToolModel):
@@ -31,7 +32,7 @@ class RemotePowerInput(StrictToolModel):
 
 
 class TargetRunInput(RunInput):
-    sudo: bool = False
+    sudo: bool = Field(default=False, description="Remote targets only; requires tty=false and approval for a supported management command.")
 
 
 class ListRemoteInput(StrictToolModel):
@@ -60,8 +61,16 @@ def _target_summary(item):
 
 
 class NativeSessionInput(SessionInput):
+    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra={
+        **session_argument_schema(),
+        "oneOf": [
+            {"required": ["session_id"], "properties": {"session_id": {"type": "integer"}, "output_ref": {"type": "null"}}},
+            {"required": ["output_ref"], "properties": {"output_ref": {"type": "string"}, "session_id": {"type": "null"},
+                "action": {"enum": ["read", "release"]}, "wait_ms": {"type": "null"}}},
+        ],
+    })
     session_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
-    output_ref: str | None = Field(default=None, min_length=1, description="Retained output reference returned after an export failure; read retries export without running the command, release explicitly discards it.")
+    output_ref: str | None = Field(default=None, min_length=1, description="Supply exactly one of session_id or output_ref. With output_ref, omit all controls including wait_ms; only read/release are allowed. Retained output reference returned after an export failure; read retries export without running the command, release explicitly discards it.")
 
     @model_validator(mode="after")
     def validate_output_reference(self):
@@ -72,12 +81,65 @@ class NativeSessionInput(SessionInput):
         return self
 
 
+SESSION_ACTIONS = ("read", "write", "resize", "terminate", "release", "watch", "extend", "unwatch")
+SESSION_CAPABILITIES = frozenset(f"op_exec_session_{action}" for action in SESSION_ACTIONS)
+
+
+class SessionIdentifierInput(StrictToolModel):
+    session_id: int = Field(gt=0, le=9223372036854775807)
+
+
+class RetainedOutputInput(StrictToolModel):
+    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra={"oneOf": [
+        {"required": ["session_id"], "properties": {"session_id": {"type": "integer"}, "output_ref": {"type": "null"}}},
+        {"required": ["output_ref"], "properties": {"output_ref": {"type": "string"}, "session_id": {"type": "null"}, "wait_ms": {"type": "null"}}},
+    ]})
+    session_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    output_ref: str | None = Field(default=None, min_length=1, description="Exactly one of session_id or output_ref. A retained output reference permits no waiting and never reruns its producer.")
+
+    @model_validator(mode="after")
+    def validate_identifier(self):
+        if (self.session_id is None) == (self.output_ref is None):
+            raise ValueError("Provide exactly one of session_id or output_ref")
+        if self.output_ref is not None and getattr(self, "wait_ms", None) is not None:
+            raise ValueError("output_ref does not accept wait_ms")
+        return self
+
+
+class ReadSessionInput(RetainedOutputInput):
+    wait_ms: int | None = Field(default=None, ge=0, le=300000, description="Wait for exit, default zero. Only with session_id; does not extend deadlines or rearm notifications.")
+
+
+class WriteSessionInput(SessionIdentifierInput):
+    text: str = Field(description="Exact PTY input; include newline to submit. At most 65536 UTF-8 bytes. Acceptance does not prove processing; inspect output before resending uncertain input.")
+
+    @model_validator(mode="after")
+    def validate_input_bytes(self):
+        if len(self.text.encode("utf-8")) > 65536:
+            raise ValueError("PTY input must fit the 64 KiB input queue")
+        return self
+
+
+class ResizeSessionInput(SessionIdentifierInput):
+    rows: int = Field(ge=1, le=65535)
+    columns: int = Field(ge=1, le=65535)
+
+
+class WatchSessionInput(SessionIdentifierInput):
+    wait_ms: int = Field(gt=0, le=300000, description="Arm one background decision event; returns immediately.")
+    extend_by_ms: int | None = Field(default=None, ge=0, le=2147483647, description="Optional atomic addition to an unexpired extendable finite deadline; does not create a deadline.")
+
+
+class ExtendSessionInput(SessionIdentifierInput):
+    extend_by_ms: int = Field(gt=0, le=2147483647, description="Add to an existing unexpired extendable finite deadline; no deadline cannot be extended.")
+
+
 STATUS_GUIDANCE = ToolGuidance(
     purpose="Show current shell sessions and their last observed execution states.",
     use_when="A session ID or execution state is needed.",
     do_not_use_when="The returned result already contains the session and next operation you need.",
-    failure_next_steps="Inspect exec_show and core_observe if the execution backend itself is unavailable.",
-    next_tool_hints=(NextToolHint(name="shell_session", use_when="Inspect or control a listed session."),),
+    failure_next_steps="Use inspect_execution_state and observe_core if the execution backend itself is unavailable.",
+    next_tool_hints=(NextToolHint(name="manage_shell_session", use_when="Inspect or control a listed session."),),
 )
 
 
@@ -127,7 +189,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         return await owner.stage(call, result)
 
     @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="session", aliases=("shell_session",),
+        namespace="operation", scope="module", family="exec", action_name="session", aliases=("manage_shell_session",),
         InputModel=NativeSessionInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
         examples=({"session_id": 1, "action": "read"},),
         async_handler_name="session_async", metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session"}, guidance=RESIDENT_SESSION_GUIDANCE,
@@ -175,7 +237,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
                     session.pop("output_failure_reported", None)
             if owner.events is not None:
                 owner.events.invalidate(sid, result)
-            from .runtime import output_result, PendingOutput
+            from .output_contract import output_result, PendingOutput
             raw = output_result(result)
             owner.pending[call.meta["tool_call"].call_id] = PendingOutput(
                 result, str(call.meta.get("turn_id") or ""), raw=raw, covers_output=False)
@@ -185,8 +247,153 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             return self._result({"session_id": result["session_id"], "status": "released"})
         return await owner.stage(call, result)
 
+
     @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="status", aliases=("shell_status",),
+        namespace="operation", scope="module", family="exec", action_name="session_read",
+        aliases=("read_shell_session",), InputModel=ReadSessionInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_read_async",
+        examples=({'session_id': 1},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "read"},
+        guidance=ToolGuidance(
+            purpose='Read an existing shell session or retry export of retained output.', use_when='Use a returned identifier for a needed fresh snapshot or retained-output recovery. Successful delivery updates output acknowledgement; do not poll repeatedly or rerun the command.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_read(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_read_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "read"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_write",
+        aliases=("write_shell_session",), InputModel=WriteSessionInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_write_async",
+        examples=({'session_id': 1, 'text': '\n'},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "write"},
+        guidance=ToolGuidance(
+            purpose='Send exact input to a live PTY shell session.', use_when='Requires a live PTY with open stdin. Acceptance only confirms queued input; inspect output before repeating uncertain input.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_write(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_write_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "write"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_resize",
+        aliases=("resize_shell_session",), InputModel=ResizeSessionInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_resize_async",
+        examples=({'session_id': 1, 'rows': 24, 'columns': 80},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "resize"},
+        guidance=ToolGuidance(
+            purpose='Resize a live PTY shell session.', use_when='Requires a live PTY; rows and columns are terminal dimensions.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_resize(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_resize_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "resize"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_terminate",
+        aliases=("terminate_shell_session",), InputModel=SessionIdentifierInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_terminate_async",
+        examples=({'session_id': 1},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "terminate"},
+        guidance=ToolGuidance(
+            purpose='Request cancellation of an existing shell session.', use_when='Cancellation acceptance does not establish exit; read terminal status to confirm.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_terminate(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_terminate_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "terminate"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_release",
+        aliases=("release_shell_session",), InputModel=RetainedOutputInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_release_async",
+        examples=({'session_id': 1},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "release"},
+        guidance=ToolGuidance(
+            purpose='Discard completed shell session output or retained failed export.', use_when='Release only when output is no longer needed. A running session cannot be released.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_release(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_release_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "release"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_watch",
+        aliases=("watch_shell_session",), InputModel=WatchSessionInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_watch_async",
+        examples=({'session_id': 1, 'wait_ms': 1000},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "watch"},
+        guidance=ToolGuidance(
+            purpose='Arm one background shell session decision event.', use_when='Returns immediately without stopping execution; optional extension applies only to an unexpired extendable finite deadline.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_watch(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_watch_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "watch"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_extend",
+        aliases=("extend_shell_session",), InputModel=ExtendSessionInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_extend_async",
+        examples=({'session_id': 1, 'extend_by_ms': 1000},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "extend"},
+        guidance=ToolGuidance(
+            purpose='Extend an existing finite shell session deadline.', use_when='Requires an unexpired extendable finite deadline. No deadline needs no extension.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_extend(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_extend_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "extend"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="session_unwatch",
+        aliases=("unwatch_shell_session",), InputModel=SessionIdentifierInput, OutputModel=StructuredToolOutput,
+        execution=INDIRECT_CONTROL, async_handler_name="session_unwatch_async",
+        examples=({'session_id': 1},),
+        metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "unwatch"},
+        guidance=ToolGuidance(
+            purpose='Disable unsolicited notifications from a shell session.', use_when='Does not stop the process or discard output; watch_shell_session restores attention.',
+            do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
+            failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
+        ),
+    )
+    def session_unwatch(self, call):
+        raise RuntimeError("native shell requires asynchronous execution")
+
+    async def session_unwatch_async(self, call):
+        return await self.session_async(replace(call, args={**call.args, "action": "unwatch"}))
+
+    @capability_action(
+        namespace="operation", scope="module", family="exec", action_name="status", aliases=("inspect_shell_status",),
         InputModel=EmptyToolInput, OutputModel=StructuredToolOutput, execution=INDIRECT_LOCAL_READ,
         guidance=STATUS_GUIDANCE, async_handler_name="shell_status_async", metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "status"},
     )
@@ -214,7 +421,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         InputModel=ListRemoteInput, OutputModel=StructuredToolOutput, execution=INDIRECT_LOCAL_READ,
         async_handler_name="list_remote_async", metadata={"background_execution": True, "native_shell_action": "list_remote"}, guidance=ToolGuidance(
             purpose="List execution targets and their readiness; defaults to a compact summary.",
-            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed.",
+            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed. Offline entries remain valid targets; use only configured explicit start actions.",
             do_not_use_when="A returned session already fixes its target.",
             failure_next_steps="Offline entries remain valid targets; use only their configured explicit start actions. For deeper diagnosis, repeat with the target ID and view=detail.",
         ),
@@ -242,10 +449,10 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         return self._result({"targets": items, "remote_attached": owner.remote_port is not None, "view": view})
 
     @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="remote_start", aliases=("remote_start",),
+        namespace="operation", scope="module", family="exec", action_name="remote_start", aliases=("start_remote_target",),
         InputModel=RemoteStartInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
         async_handler_name="remote_start_async", metadata={"background_execution": True, "native_shell_action": "remote_start"}, guidance=ToolGuidance(
-            purpose="Explicitly invoke one preconfigured target startup action.",
+            purpose="Explicitly invoke one preconfigured target startup action. Completion does not prove readiness; refresh target metadata to verify.",
             use_when="list_remote reports a configured wake or user-service start action that is needed.",
             do_not_use_when="A target is already available; this is not command replay or worker restart.",
             failure_next_steps="Refresh target metadata to verify readiness; action completion alone does not prove readiness.",
@@ -256,13 +463,19 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
 
     async def remote_start_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
-        return self._result(await owner.shell._port().call('start', dict(call.args)))
+        payload = dict(await owner.shell._port().call('start', dict(call.args)))
+        payload["readiness"] = "unverified"
+        result = self._result(payload, status=RuntimeStatus.ERROR if payload.get("returncode", 0) != 0 else RuntimeStatus.OK)
+        from pal.execution.tool_facade import ToolAffordance
+        from dataclasses import replace
+        return replace(result, affordances=[ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {
+            "target": call.args["target"], "refresh": True}}, reason="Verify target readiness after the startup action.")])
 
     @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="remote_power", aliases=("remote_power",),
+        namespace="operation", scope="module", family="exec", action_name="remote_power", aliases=("shutdown_remote_target",),
         InputModel=RemotePowerInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
         async_handler_name="remote_power_async", metadata={"background_execution": True, "native_shell_action": "remote_power"}, guidance=ToolGuidance(
-            purpose="Request target shutdown after a single human approval and atomic worker busy check.",
+            purpose="Request target shutdown after a single human approval and atomic worker busy check. Accepted does not prove power-off; unknown is an unconfirmed outcome, not success.",
             use_when="list_remote reports management.shutdown.supported=true and the target owner authorizes shutdown.",
             do_not_use_when="Only disconnecting the plugin or stopping one command is intended; never shut down this Pal host.",
             failure_next_steps="Accepted does not prove power-off. An unknown outcome must not be treated as success; busy rejects without scheduling later shutdown.",
@@ -273,12 +486,15 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
 
     async def remote_power_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
-        return self._result(await owner.shell.privileged(call.args['target'], 'shutdown', turn_id=str(call.meta.get('turn_id') or '')))
+        payload = dict(await owner.shell.privileged(call.args['target'], 'shutdown', turn_id=str(call.meta.get('turn_id') or '')))
+        payload["shutdown_confirmed"] = False
+        payload["outcome_note"] = "Accepted does not prove power-off; an unknown outcome must not be repeated automatically."
+        return self._result(payload, status=RuntimeStatus.ERROR if payload.get("status") == "unknown" else RuntimeStatus.OK)
 
     @staticmethod
-    def _result(payload):
+    def _result(payload, *, status=RuntimeStatus.OK):
         text = render_structured_for_llm(payload)
-        return CapabilityResult(status=RuntimeStatus.OK, structured=payload, text=text, llm_text=text)
+        return CapabilityResult(status=status, structured=payload, text=text, llm_text=text)
 
 
 def build_provider(runtime):
@@ -286,7 +502,7 @@ def build_provider(runtime):
     import tomllib
     from pathlib import Path
     from dataclasses import replace
-    from pal_shell_remote.slot import Target
+    from pal_shell_contracts import Target
     if runtime.runtime_root is None:
         return NativeExecutionProvider(runtime=runtime)
     path = Path(runtime.runtime_root) / 'config' / 'remote.toml'

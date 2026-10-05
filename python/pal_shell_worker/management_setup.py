@@ -111,7 +111,7 @@ Manual equivalent (optional):
    Shutdown policy: {'approval' if shutdown else 'disabled'}. To change it later, rerun --setup-sudo;
    update BOTH the administrator policy and worker-sudo.toml, then coordinate worker restart.
    Verify list_remote reports management.shutdown.supported={'true' if shutdown else 'false'}.
-   remote_power(target={target}, action="shutdown") requests a real shutdown after approval;
+   shutdown_remote_target(target={target}, action="shutdown") requests a real shutdown after approval;
    do not use it as an installation probe.
 5. Rollback: remove only /etc/sudoers.d/pal-shell-management, run sudo visudo -c,
    and restore the previous worker configuration/version after coordinating tasks.

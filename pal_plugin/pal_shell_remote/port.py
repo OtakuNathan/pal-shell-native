@@ -1,6 +1,6 @@
 """Detached-value port; no resident shell object depends on plugin implementation."""
 from pal.foundation.sidecar import SidecarRpcClient
-from pal_shell_native.remote_contract import RemoteFailure
+from pal_shell_contracts import RemoteFailure
 
 
 class HubPort:

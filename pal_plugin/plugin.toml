@@ -6,7 +6,7 @@ lifecycle_protocol = "raii.v1"
 module_id = "remote"
 requires_plugins = []
 requires_ports = ["execution:extensions"]
-reload_modules = ["pal_shell_native", "pal_shell_remote"]
+reload_modules = ["pal_shell_native", "pal_shell_remote", "pal_shell_contracts"]
 
 [execution]
 role_entrypoint = "pal_shell_native.plugin:activate_role"

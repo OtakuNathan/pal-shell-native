@@ -142,15 +142,15 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_instant_read_stagnation_ignores_clock_but_preserves_new_output(self):
         from pal.shared.tool_protocol import new_tool_call, ToolExecutionResult
-        call = new_tool_call(name='shell_session', args={'session_id': 7, 'action': 'read', 'wait_ms': 0})
+        call = new_tool_call(name='manage_shell_session', args={'session_id': 7, 'action': 'read', 'wait_ms': 0})
         def result(raw):
-            return ToolExecutionResult(name='shell_session', ok=True, llm_text=str(raw), structured=raw)
+            return ToolExecutionResult(name='manage_shell_session', ok=True, llm_text=str(raw), structured=raw)
         first = self.runtime.stagnation_payload(call, result(self.raw()))
         later = self.runtime.stagnation_payload(call, result(self.raw(elapsed_ms=20, remaining_ms=80)))
         self.assertEqual(first, later)
         changed = self.runtime.stagnation_payload(call, result(self.raw(stdout_total=1, stdout='x')))
         self.assertNotEqual(first, changed)
-        waited = new_tool_call(name='shell_session', args={'session_id': 7, 'action': 'read', 'wait_ms': 1000})
+        waited = new_tool_call(name='manage_shell_session', args={'session_id': 7, 'action': 'read', 'wait_ms': 1000})
         self.assertNotEqual(self.runtime.stagnation_payload(waited, result(self.raw())),
                             self.runtime.stagnation_payload(waited, result(self.raw(elapsed_ms=20, remaining_ms=80))))
 
@@ -253,9 +253,9 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         self.obs.record(raw)
         call_id = 'watch-receipt'
         from pal.shared.tool_protocol import new_tool_call
-        call = new_tool_call(name='shell_session', args={'session_id': 7}, call_id=call_id)
+        call = new_tool_call(name='manage_shell_session', args={'session_id': 7}, call_id=call_id)
         self.memory.upsert_l1_assistant('t', LLMMessageIR(role=MessageRole.ASSISTANT, parts=(call,)))
-        self.memory.append_l1_tool_result('t', ToolResultIR(call_id=call_id, name='shell_session',
+        self.memory.append_l1_tool_result('t', ToolResultIR(call_id=call_id, name='manage_shell_session',
             content='control receipt', structured=raw, ok=True))
         self.obs.note_tool_state(call_id, raw)
         before = len(self.memory.active_l1_turn('t').messages)
@@ -300,8 +300,8 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         before = self.memory.active_l1_turn('t')
         self.assertIn('output_error', before.messages[-1].text)
         self.assertIn('exited', before.messages[-1].text)
-        self.assertIn('"name":"shell_session"', before.messages[-1].text)
-        self.assertIn('"args":{"action":"read","session_id":7}', before.messages[-1].text)
+        self.assertIn('"name":"read_shell_session"', before.messages[-1].text)
+        self.assertIn('"args":{"session_id":7}', before.messages[-1].text)
         self.assertFalse(self.state()['outputs'])
         await asyncio.sleep(0)
         self.assertEqual(self.shell.acks, 0)
@@ -347,7 +347,7 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         from pal.execution.tool_facade import CompleteResult, EffectOutcome
         from pal.shared.tool_protocol import new_tool_call
         from pal_shell_native.runtime import PendingOutput
-        call = new_tool_call(name='shell_session', args={'session_id': 7})
+        call = new_tool_call(name='manage_shell_session', args={'session_id': 7})
         ref = self.runtime.result_snapshots.capture('full output', call_id=call.call_id, lifetime='t')
         invocation = CompleteResult(output={}, snapshot_refs=(ref,),
                                  llm_text='same preview', effect=EffectOutcome.NONE, affordances=[])

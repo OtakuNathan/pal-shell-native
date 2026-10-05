@@ -3,7 +3,7 @@ import asyncio
 import logging
 import random
 
-from .remote_contract import RemoteFailure
+from pal_shell_contracts import RemoteFailure
 
 LOGGER = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5

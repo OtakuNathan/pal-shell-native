@@ -60,11 +60,11 @@ The package retains the `remote` plugin ID for upgrades from 0.4.0. Its entrypoi
 is now `pal_shell_native.plugin`; `execution:extensions` is the required Pal port.
 `PAL_SHELL_BACKEND` no longer selects an implementation. Preserve other launch
 settings and import paths. A binary or Pal core upgrade requires a new process;
-ordinary Python plugin reload uses `plugin_attach` at an idle lifecycle boundary.
+ordinary Python plugin reload uses `attach_plugin` at an idle lifecycle boundary.
 Never overwrite a mapped binary or drop unresolved work to force a reload.
 
 Validate wheel import location/API, then check the installed plugin's `run_shell`
-schema contains `wait_ms`, `tty` and `target`, discover `shell_session`, and run a
+schema contains `wait_ms`, `tty` and `target`, discover `manage_shell_session`, and run a
 harmless command. Test a background wait and observation before real work. The
 acceptance suite also covers failed activation, busy detach, restored built-in
 schema, remote routing and Bunshin sandbox dependencies without paid LLM calls.

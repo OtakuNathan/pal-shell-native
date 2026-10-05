@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from .capabilities import SESSION_CAPABILITIES
+
 
 
 class BunshinShellSessions:
@@ -27,7 +29,7 @@ class BunshinShellSessions:
 
     def handles_capability(self, name):
         from pal.bunshin.v2.verification_builder import SHELL_EVIDENCE_CAPABILITIES
-        return name in SHELL_EVIDENCE_CAPABILITIES | {"op_exec_shell", "op_exec_session"}
+        return name in SHELL_EVIDENCE_CAPABILITIES | SESSION_CAPABILITIES | {"op_exec_shell", "op_exec_session"}
 
     def execution_delegate(self, runtime, check_cancel):
         async def execute(call, **kwargs):
@@ -87,4 +89,4 @@ class BunshinShellSessions:
             return ""
         return ("This role still owns shell work or undelivered output and cannot finish yet. "
                 "An eligible observation is ready for this request. Use its state and output to continue; "
-                "do not repeat the command. Use shell_session only when execution control or a fresh read is needed.")
+                "do not repeat the command. Use manage_shell_session only when execution control or a fresh read is needed.")

@@ -33,7 +33,7 @@ must not share ownership. Private keys never appear in tool parameters or result
 - `run_shell(cmd, target=0, ...)`: existing shell arguments, plus execution location.
   `sudo=True` requests one approved privileged operation on a remote target; privileged
   PTYs are rejected. Ordinary remote PTYs remain supported.
-- `shell_session(session_id, ...)`: positive public ID already binds target and
+- `manage_shell_session(session_id, ...)`: positive public ID already binds target and
   Runtime epoch; no target override. Controls use separate operation IDs.
 - The host reconciles uncertain submissions/PTY input using the original operation
   ID and retries retained output/ACK delivery internally. These are not model tools.
@@ -42,9 +42,9 @@ must not share ownership. Private keys never appear in tool parameters or result
 - `list_remote(refresh=False)`: always includes local target 0 and configured
   remote entries even when offline. Configured facts and timestamped worker probes
   are separate. Refresh probes without waking or starting machines.
-- `remote_start(target, action)`: explicitly invokes a configured existing startup
+- `start_remote_target(target, action)`: explicitly invokes a configured existing startup
   command. The action's exit code does not prove the machine or worker is ready.
-- `remote_power(target, action="shutdown")`: a separate management action; not
+- `shutdown_remote_target(target, action="shutdown")`: a separate management action; not
   plugin detach, transport close or session termination. Requires one trusted approval for each shutdown request.
 - `run_shell_<shortcut>(...)`: fixed projection generated from each configured
   nonempty, unique `shortcut` (for example desktop, cloud or macos).
@@ -362,7 +362,7 @@ arguments, environment, PTY transcripts or checkpoints. Locked/denied Keychain f
 explicitly. Windows has no privileged operations or power. Linux management no
 longer uses Secret Service; existing credentials are left untouched.
 
-`remote_power(action="shutdown")` is separate from session/transport close. Enable
+`shutdown_remote_target(action="shutdown")` is separate from session/transport close. Enable
 it only in the Ubuntu desktop's root policy and worker configuration; cloud,
 Windows and Mac targets retain disabled power. Every shutdown requires trusted
 approval. Worker draining and the busy check are atomic: active tasks, unresolved

@@ -39,7 +39,7 @@ On Pal's side verify the native execution backend, matching pal-shell-native/RPC
 package, execution:extensions port, and remote plugin discovery.
 The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
 it is not built into Pal. Install the matching native wheel in the host interpreter,
-then use package_install (or pal package install for offline preparation) with
+then use install_package (or pal package install for offline preparation) with
 plugin-remote-0.4.1.palpkg. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
@@ -153,7 +153,7 @@ protocol 2. Linux uses signed sudoers management without a stored password or
 unlocked Secret Service dependency. Only apt/apt-get update and apt/apt-get install
 PACKAGE... are accepted through run_shell(sudo=True), without extra flags, package
 files or root shell scripts. Each operation requires trusted approval of normalized
-action/packages. Shutdown remains remote_power, enabled only for a configured
+action/packages. Shutdown remains shutdown_remote_target, enabled only for a configured
 Ubuntu desktop; cloud, Windows and Mac power remain disabled.
 
 The machine owner runs

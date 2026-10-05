@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pal.shared.diagnostics import exception_diagnostic
+
 from contextlib import suppress, asynccontextmanager
 import asyncio
-from dataclasses import dataclass
 
 from pal.execution.contracts import CapabilityResult
 from pal.execution.runtime import ExecutionRuntime
@@ -11,11 +12,12 @@ from pal.execution.tool_facade import (
     ToolAffordance, ToolExecutionError,
 )
 from pal.shared.result_rendering import render_structured_for_llm
-from pal.shared import RuntimeStatus
 
 from .adapter import ShellRuntime, ShellRejected, TERMINAL, READ_EFFECTS
+from .output_contract import PendingOutput, output_result
 from .tools import session_affordances
-from .remote_contract import RemoteFailure
+from .capabilities import SESSION_CAPABILITIES
+from pal_shell_contracts import RemoteFailure
 from .recovery import retry_read, LOGGER
 
 
@@ -25,34 +27,6 @@ REMOTE_PENDING_BYTES = 64 * 1024 * 1024
 
 def native_action(record):
     return record.binding.descriptor.metadata.get("native_shell_action", "")
-
-
-def output_result(result):
-    # Control receipts, epochs, cursors and journal IDs never enter model text.
-    fields = ("session_id", "target", "status", "returncode", "signal", "error",
-              "stdout", "stderr", "tty", "watching", "has_deadline", "remaining_ms",
-              "has_wake", "wake_remaining_ms", "truncated", "output_error")
-    payload = {key: result[key] for key in fields if key in result}
-    if result.get("status") not in TERMINAL:
-        payload["returncode"] = None
-    text = render_structured_for_llm(payload)
-    if result.get("_snapshot_text"):
-        text += "\n" + result["_snapshot_text"]
-    return CapabilityResult(status=RuntimeStatus.OK, structured=payload, text=text, llm_text=text,
-                            effect_receipt=EffectReceipt(outcome=EffectOutcome.APPLIED),
-                            snapshot_refs=tuple(result.get("_output_snapshots", ())))
-
-
-@dataclass
-class PendingOutput:
-    result: dict
-    turn_id: str
-    raw: CapabilityResult | None = None
-    prepared: bool = False
-    recovery_of: str = ""
-    delivered: bool = False
-    failure: str = ""
-    covers_output: bool = True
 
 
 class NativeShellOwner:
@@ -312,7 +286,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
     def role_capabilities(self, allowed):
         from pal.bunshin.scoped_execution import SHELL_EVIDENCE_CAPABILITIES
         if (SHELL_EVIDENCE_CAPABILITIES | {"op_exec_shell"}).intersection(allowed):
-            return list(dict.fromkeys([*allowed, "op_exec_session", "op_exec_status", "op_tool_call", "op_tool_read"]))
+            return list(dict.fromkeys([*allowed, "op_exec_session", *sorted(SESSION_CAPABILITIES), "op_exec_status", "op_tool_call", "op_tool_read"]))
         return allowed
 
     def project_role_descriptor(self, descriptor):
@@ -323,7 +297,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
         guidance = descriptor.guidance
         if metadata.get('native_shell_action'):
             metadata['preserve_role_contract'] = True
-        if canonical in {"op_exec_session", "op_exec_status"}:
+        if canonical in SESSION_CAPABILITIES | {"op_exec_session", "op_exec_status"}:
             metadata['preserve_role_invocation_mode'] = True
         if canonical == "op_exec_shell":
             guidance = guidance.model_copy(update={
@@ -331,7 +305,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     " A nonzero session_id identifies retained execution. The next model request immediately reads prepared observations."
                     " A text-only response while work remains yields until an eligible event. Use tty=true for interactive input.",
                 "failure_next_steps": guidance.failure_next_steps + " Do not replay a live session or poll repeatedly."
-                    " Use shell_session for PTY input, termination or a needed fresh snapshot."
+                    " Use manage_shell_session for PTY input, termination or a needed fresh snapshot."
                     " Success requires status=exited and returncode=0. Pending shell output blocks writes and submission.",
             })
         if canonical == "op_exec_session":
@@ -367,7 +341,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
         name = call.name
         if name == 'call_tool':
             name, args = args.get('name'), args.get('args', {})
-        if name in {'shell_session', 'op_exec_session', 'shell_status', 'op_exec_status'}:
+        if name in {'manage_shell_session', 'op_exec_session', 'read_shell_session', 'op_exec_session_read', 'inspect_shell_status', 'op_exec_status'}:
             if args.get('action', 'read') == 'read' and not args.get('wait_ms'):
                 payload = result.structured or {}
                 pending = self.shell_owner.pending.get(call.call_id)
@@ -378,7 +352,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     return {'ok': result.ok, **semantic_state(payload),
                             'stdout': payload.get('stdout'), 'stderr': payload.get('stderr'),
                             'output_bytes': {stream: payload.get(stream + '_total') for stream in ('stdout', 'stderr')}}
-                if name in {'shell_status', 'op_exec_status'}:
+                if name in {'inspect_shell_status', 'op_exec_status'}:
                     return {'ok': result.ok, 'structured': payload}
         return super().stagnation_payload(call, result)
 
@@ -390,7 +364,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if call.name == "op_exec_shell":
             while result.ok and (result.structured or {}).get("status") in {"running", "terminating"}:
                 result = await self.execute_tool_async(new_tool_call(name="call_tool", args={
-                    "name": "shell_session", "args": {"session_id": result.structured["session_id"], "wait_ms": 300000},
+                    "name": "read_shell_session", "args": {"session_id": result.structured["session_id"], "wait_ms": 300000},
                 }, call_id=call.call_id), **kwargs)
         return result
 
@@ -449,8 +423,9 @@ class NativeExecutionRuntime(ExecutionRuntime):
             hints = [ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {}},
                                    reason="Check whether the execution target is available.")]
             receipt = EffectReceipt(outcome=EffectOutcome(exc.effect), receipt={"operation_id": exc.operation_id})
-            message = ("The requested shell operation may have taken effect; its outcome could not be confirmed. "
-                       "Do not repeat it automatically." if exc.effect == "unknown" else str(exc))
+            message = exception_diagnostic(exc)
+            if exc.effect == "unknown":
+                message += "\nThe requested shell operation may have taken effect; its outcome could not be confirmed. Do not repeat it automatically."
             raise ToolExecutionError(message, error_code=exc.code, effect_receipt=receipt,
                                      affordances=hints) from exc
         except ShellRejected as exc:
@@ -468,12 +443,12 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     {'session_id': key, 'status': item.get('latest_status', 'running'),
                      'watching': item.get('watching', True)}
                     for key, item in self.shell_owner.sessions.items() if item.get('target', 0) == 0]
-                if not details['blocking_sessions'] and not hints:
-                    hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'shell_status', 'args': {}},
-                        reason='The blocking resource is not identified in this result.'))
+                if not hints:
+                    hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'inspect_shell_status', 'args': {}},
+                        reason='Inspect tracked sessions and their last observed states; these are not confirmed causal blockers.'))
             elif sid:
-                hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'shell_session',
-                    'args': {'session_id': sid, 'action': 'read', 'wait_ms': 0}},
+                hints.append(ToolAffordance(tool='call_tool', arguments={'name': 'read_shell_session',
+                    'args': {'session_id': sid, 'wait_ms': 0}},
                     reason='Read this session only if its current state is needed to resolve the precondition.'))
             raise ToolRejectedError(str(exc), error_code=code, affordances=hints, details=details,
                                     recovery_hint=details.get("next_step", "")) from exc
@@ -552,7 +527,19 @@ class NativeExecutionRuntime(ExecutionRuntime):
                         break
             if not isinstance(result, (CompleteResult,)):
                 pending.failure = "The command result could not be delivered. Do not rerun the command to retrieve output."
-                result = result.model_copy(update={"llm_text": pending.failure, "effect": EffectOutcome.APPLIED})
+                from .tools import session_affordances
+                payload = pending.raw.structured if isinstance(pending.raw, CapabilityResult) else getattr(pending.raw, "output", {})
+                payload = dict(payload or {})
+                hints = session_affordances({**payload, "output_error": pending.failure}, output_ref=call.call_id)
+                body = result.llm_text + "\n" + pending.failure
+                if payload.get("session_id"):
+                    body += f"\nRetained session_id: {payload['session_id']}."
+                else:
+                    body += f"\nRetained output_ref: {call.call_id}."
+                result = result.model_copy(update={"llm_text": body, "effect": EffectOutcome.APPLIED,
+                                                   "affordances": [*result.affordances, *hints]})
+                result = self._finalize_invocation_result(generation, call, result,
+                    budget=kwargs.get("budget"), turn_id=kwargs.get("turn_id"))
         if isinstance(result, (CompleteResult,)) and result.output_error and not pending.failure:
             # The shared finalizer budgets after normalization, so a capture
             # failure surfaces on the finalized result; propagate it to the

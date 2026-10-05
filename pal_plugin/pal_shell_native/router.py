@@ -1,6 +1,8 @@
 """Resident target/session ownership; optional plugins supply only a backend port."""
 from __future__ import annotations
 
+from pal.shared.diagnostics import exception_diagnostic, diagnostic_text
+
 import asyncio
 from dataclasses import dataclass
 import itertools
@@ -10,7 +12,7 @@ import weakref
 from uuid import uuid4
 
 from .adapter import ShellRuntime, ShellRejected, Completion, TERMINAL
-from .remote_contract import RemoteFailure
+from pal_shell_contracts import RemoteFailure
 from .recovery import LOGGER
 
 
@@ -181,7 +183,7 @@ class ShellRouter(ShellRuntime):
                 self.operations.pop(ticket.operation_id, None)
                 self.operation_context.pop(ticket.operation_id, None)
                 raise RemoteFailure('remote_prepare_failed',
-                    'Target preparation failed before command submission; inspect worker compatibility') from exc
+                    'Target preparation failed before command submission; inspect worker compatibility; cause: ' + exception_diagnostic(exc)) from exc
             raise
         finally:
             self.remote_foreground.discard(task)

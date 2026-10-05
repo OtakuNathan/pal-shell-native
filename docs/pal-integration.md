@@ -5,6 +5,19 @@ guidance, session/PTY controls, output materialization, event delivery, privileg
 approval and Bunshin session driver. `pal_shell_remote` owns the remote Hub and
 transport. The package uses the existing `remote` installation identity.
 
+`pal_shell_contracts` contains the standard-library-only target configuration and
+remote port/error contracts. Native and Remote both import it; Remote does not
+import the Native implementation. Native's `output_contract` owns pending output
+values and result projection, without importing runtime, capabilities or delivery
+owners. Function-local imports are included in the acyclic import-graph check.
+Legacy symbol locations remain compatibility exports of the same objects.
+
+Local provider construction and Bunshin roles require only `_pal_shell_runtime`,
+not the worker/RPC package. Configured remote shortcuts read the shared target
+model without loading a connection. Actual remote connections still belong to
+the Hub and require the existing worker/RPC dependencies. The package verification
+hook continues checking the complete remote installation.
+
 Pal exposes `execution:extensions`, a stable logical execution handle. The plugin
 returns a ModuleHandle with an execution extension. Under the normal plugin write
 fence, Pal prepares the replacement registry generation and state port, then
@@ -62,7 +75,7 @@ is required for this host-side refactor.
 
 A delivered export error does not acknowledge native stdout/stderr. Failed output
 stays retained until a successful export and delivery, or an explicit release.
-`shell_session(action="read", session_id=...)` retries the captured failed export;
+`read_shell_session(session_id=...)` retries the captured failed export;
 when a one-shot command has no session, its failure affordance supplies an
 `output_ref` instead. That reference supports only read and release, never command
 execution. Storage failures do not change the command's actual effect or status.
@@ -78,7 +91,7 @@ or the owner shuts down; command strings are not parsed to infer ownership.
 Pair this plugin with Pal's result-guidance revision. Ordinary live, watched,
 PTY, and terminal results report facts without repeating a session action menu;
 static relationships remain in the tool descriptors. An actual output-save/read
-failure supplies a validated `shell_session(action="read", session_id=...)`
+failure supplies a validated `read_shell_session(session_id=...)`
 recovery action, or an `output_ref` for retained one-shot output. This applies to
 ordinary results, resident completion events, and active-turn observations,
 including save failures first discovered by Pal's finalizer. Recovery exports
@@ -90,3 +103,13 @@ Optional actions are outside the body truncation budget and cannot crowd out
 execution facts; the complete rendered result can therefore exceed that budget.
 These source changes require the paired Pal resident runtime activation; copying
 plugin files alone does not activate a new execution runtime.
+
+
+Session actions also have independent indirect contracts: read/write/resize/terminate/
+release/watch/extend/unwatch_shell_session. Read and release accept exactly one of
+session_id or output_ref; output_ref never accepts waiting or process controls.
+The action-based manage_shell_session remains available as a distinct multiplexer.
+All session operations conservatively use control/reconcile-first semantics because
+read delivery participates in acknowledgement and retained-output lifecycle.
+Bunshin roles gain these contracts only with shell/evidence permission and retain
+the same session owner; the aliases do not broaden cross-role access.

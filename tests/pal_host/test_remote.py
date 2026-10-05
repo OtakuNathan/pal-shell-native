@@ -185,7 +185,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             for target in (0, 2):
                 result = await self.tool('run_shell', target=target, cmd='printf independent')
                 self.assertTrue(result.ok, result.llm_text)
-            stopped = await self.tool('call_tool', name='shell_session', args={'session_id': started.structured['session_id'], 'action': 'terminate'})
+            stopped = await self.tool('call_tool', name='manage_shell_session', args={'session_id': started.structured['session_id'], 'action': 'terminate'})
             self.assertTrue(stopped.ok, stopped.llm_text)
         finally:
             await second.close()
@@ -335,7 +335,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         from pal.foundation.persistence import PalV2Database
         from pal.shared import RuntimeStatus
         import pal_shell_remote
-        saved_modules = {name: module for name, module in sys.modules.items() if name.startswith(('pal_shell_native', 'pal_shell_remote'))}
+        saved_modules = {name: module for name, module in sys.modules.items() if name.startswith(('pal_shell_native', 'pal_shell_remote', 'pal_shell_contracts'))}
         source = Path(pal_shell_remote.__file__).resolve().parent.parent
         artifact = build(source, self.path/'dist')
         result = PackageService(self.path).install(artifact)
@@ -366,26 +366,37 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             plugin = host.generations['remote'].instance
             module = sys.modules[type(plugin).__module__]
             self.assertTrue(Path(module.__file__).is_relative_to(installed))
+            contracts = sys.modules['pal_shell_contracts']
+            self.assertTrue(Path(contracts.__file__).is_relative_to(installed))
             self.runtime = self.core.context.execution_runtime
+            for action in ('read', 'write', 'resize', 'terminate', 'release', 'watch', 'extend', 'unwatch'):
+                record = self.runtime.registry_generation.record_for_alias(f'{action}_shell_session')
+                self.assertIsNotNone(record)
+                self.assertEqual(record.canonical_path, f'op_exec_session_{action}')
+            installed_contract = await self.tool('read_tool', name='read_shell_session')
+            self.assertTrue(installed_contract.ok, installed_contract.text)
+            self.assertIn('output_ref', installed_contract.text)
             reply = await self.tool('run_shell', cmd='printf installed-palpkg', target=1)
             self.assertTrue(reply.ok, reply.text)
             self.assertIn('installed-palpkg', reply.text)
             await asyncio.gather(*tuple(self.runtime.shell_owner.observations.acking.values()))
-            reloaded = await self.tool('call_tool', name='plugin_attach', args={'name': 'remote'})
+            reloaded = await self.tool('call_tool', name='reload_plugin', args={'name': 'remote'})
             self.assertTrue(reloaded.ok, reloaded.text)
             self.assertIsNot(host.generations['remote'].instance, plugin)
+            self.assertIsNot(sys.modules['pal_shell_contracts'], contracts)
+            self.assertTrue(Path(sys.modules['pal_shell_contracts'].__file__).is_relative_to(installed))
             self.assertIsNotNone(self.worker.server)
             background = await self.tool('run_shell', cmd='sleep .05; printf idle', wait_ms=0)
             self.assertTrue(background.ok, background.text)
             self.assertEqual(host.detach('remote')['status'], RuntimeStatus.ERROR)
             self.assertIn('wait_ms', self.runtime.registry_generation.record_for_alias('run_shell').input_schema['properties'])
-            completed = await self.tool('call_tool', name='shell_session', args={'session_id': background.structured['session_id'], 'wait_ms': 5000})
+            completed = await self.tool('call_tool', name='read_shell_session', args={'session_id': background.structured['session_id'], 'wait_ms': 5000})
             self.assertTrue(completed.ok, completed.text)
             await asyncio.gather(*tuple(self.runtime.shell_owner.observations.acking.values()))
-            disabled = await self.tool('call_tool', name='plugin_disable', args={'name': 'remote'})
+            disabled = await self.tool('call_tool', name='disable_plugin', args={'name': 'remote'})
             self.assertTrue(disabled.ok, disabled.text)
             self.assertNotIn('wait_ms', self.runtime.registry_generation.record_for_alias('run_shell').input_schema['properties'])
-            self.assertNotIn('shell_session', self.runtime.registry_generation.indirect_aliases)
+            self.assertNotIn('manage_shell_session', self.runtime.registry_generation.indirect_aliases)
             host.rescan()
             self.assertFalse(host.third_party_repository.get('remote').enabled)
             local = await self.tool('run_shell', cmd='printf local')
@@ -396,7 +407,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             if str(installed) in sys.path:
                 sys.path.remove(str(installed))
             for name in list(sys.modules):
-                if name.startswith(('pal_shell_native', 'pal_shell_remote')):
+                if name.startswith(('pal_shell_native', 'pal_shell_remote', 'pal_shell_contracts')):
                     sys.modules.pop(name)
             sys.modules.update(saved_modules)
 
@@ -441,7 +452,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.owner.pending)
         self.assertTrue(self.worker.outputs)
         recovered = await self.runtime.execute_tool_async(new_tool_call(name='call_tool', args={
-            'name': 'shell_session', 'args': {'output_ref': call.call_id}}), turn_id='origin')
+            'name': 'manage_shell_session', 'args': {'output_ref': call.call_id}}), turn_id='origin')
         self.assertIn('retained', recovered.text)
         self.assertEqual(count.read_text(), 'one\n')
         await asyncio.gather(*tuple(self.owner.observations.acking.values()))
@@ -455,14 +466,14 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(sid, 1 << 48)
         self.owner.detach_remote(self.port)
         await self.hub.close()
-        unavailable = await self.tool('call_tool', name='shell_session', args={'session_id': sid})
+        unavailable = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid})
         self.assertFalse(unavailable.ok)
         self.hub = RemoteHub([self.target])
         self.port = DirectPort(self.hub)
         self.owner.attach_remote(self.port)
-        write = await self.tool('call_tool', name='shell_session', args={'session_id': sid, 'action': 'write', 'text': 'hello\n'})
+        write = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid, 'action': 'write', 'text': 'hello\n'})
         self.assertTrue(write.ok, write.text)
-        read = await self.tool('call_tool', name='shell_session', args={'session_id': sid, 'wait_ms': 5000})
+        read = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid, 'wait_ms': 5000})
         self.assertTrue(read.ok, read.text)
         self.assertIn('got:hello', read.text)
         await asyncio.gather(*tuple(self.runtime.shell_owner.observations.acking.values()))
@@ -515,7 +526,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.close()
         self.worker = await Worker(old_config).start()
         await self.hub.slots[1]._disconnect()
-        result = await self.tool('call_tool', name='shell_session', args={'session_id': sid})
+        result = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid})
         self.assertFalse(result.ok)
         self.assertIn(sid, self.owner.shell.tickets)
 
@@ -524,7 +535,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         management = data.structured['targets'][1]['management']
         self.assertFalse(management['start']['supported'])
         self.assertFalse(management['shutdown']['supported'])
-        for name, action in [('remote_start', 'wake'), ('remote_power', 'shutdown')]:
+        for name, action in [('start_remote_target', 'wake'), ('shutdown_remote_target', 'shutdown')]:
             result = await self.tool('call_tool', name=name, args={'target': 1, 'action': action})
             self.assertFalse(result.ok, result.text)
         self.assertFalse(self.worker.operations)
@@ -557,9 +568,9 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.worker.outputs)
             self.assertIn(sid, self.owner.shell.tickets)
             plugin.start()
-            result = await self.tool('call_tool', name='shell_session', args={'session_id': sid, 'action': 'write', 'text': 'yes\n'})
+            result = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid, 'action': 'write', 'text': 'yes\n'})
             self.assertTrue(result.ok, result.text)
-            result = await self.tool('call_tool', name='shell_session', args={'session_id': sid, 'wait_ms': 5000})
+            result = await self.tool('call_tool', name='manage_shell_session', args={'session_id': sid, 'wait_ms': 5000})
             self.assertTrue(result.ok, result.text)
             self.assertIn('done:yes', result.text)
         finally:
@@ -726,7 +737,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             while not self.owner.shell.remote_completions:
                 await asyncio.sleep(.02)
         self.port.drop_release = True
-        released = await self.tool('call_tool', name='shell_session', args={'session_id':sid, 'action':'release'})
+        released = await self.tool('call_tool', name='manage_shell_session', args={'session_id':sid, 'action':'release'})
         self.assertTrue(released.ok, released.text)
         self.assertEqual(released.structured['status'], 'released')
         self.assertNotIn(sid, self.owner.sessions)

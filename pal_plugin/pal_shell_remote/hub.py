@@ -11,7 +11,8 @@ import tomllib
 from pal.foundation.sidecar import (SidecarEndpoint, start_sidecar_server, cleanup_sidecar_endpoint,
                                     handle_sidecar_client, dispatch_sidecar_request)
 from pal_shell_worker.protocol import RemoteError
-from .slot import RemoteSlot, Target
+from pal_shell_contracts import Target
+from .slot import RemoteSlot
 
 
 class RemoteHub:

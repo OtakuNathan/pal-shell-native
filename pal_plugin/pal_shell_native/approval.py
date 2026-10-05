@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pal.control.contracts import ControlRoute, ControlDelivery, InteractionMessageSpec, InteractionButtonSpec
 from pal.execution.approval import ExecutionApprovalRequest
-from .remote_contract import RemoteFailure
+from pal_shell_contracts import RemoteFailure
 
 logger = logging.getLogger(__name__)
 CLOSE_TIMEOUT_SECONDS = 5

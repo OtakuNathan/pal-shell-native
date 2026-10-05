@@ -13,7 +13,7 @@ from pal.shared import PromptAssemblyContext
 from pal.shared.tool_protocol import new_tool_call
 from pal.execution.tool_facade import CompleteResult, ToolRejectedError
 
-from .runtime import output_result
+from .output_contract import output_result
 from .adapter import TERMINAL
 from .observations import EVENT, WAIT_EVENT, event_metadata, observation_is_current, output_since
 

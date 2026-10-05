@@ -21,9 +21,9 @@ class NativeContractTests(unittest.TestCase):
             hints = session_affordances({'session_id': sid, 'status': 'exited', 'output_error': 'disk full'})
             self.assertEqual(len(hints), 1)
             self.assertEqual(hints[0].tool, 'call_tool')
-            self.assertEqual(hints[0].arguments, {'name': 'shell_session', 'args': {'session_id': sid, 'action': 'read'}})
+            self.assertEqual(hints[0].arguments, {'name': 'read_shell_session', 'args': {'session_id': sid}})
         hints = session_affordances({'session_id': 0, 'output_error': 'disk full'}, output_ref='saved-call')
-        self.assertEqual(hints[0].arguments['args'], {'output_ref': 'saved-call', 'action': 'read'})
+        self.assertEqual(hints[0].arguments['args'], {'output_ref': 'saved-call'})
         self.assertEqual(session_affordances({'output_error': 'disk full'}), [])
         self.assertEqual(session_affordances({'status': 'exited'}, output_ref='saved-call'), [])
 

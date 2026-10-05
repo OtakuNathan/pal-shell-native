@@ -349,7 +349,7 @@ class ObservationOwner:
         for name in ('states', 'events', 'outputs'):
             coverage.setdefault(name, {})
         messages, claimed = [], []
-        from .runtime import PendingOutput, output_result
+        from .output_contract import PendingOutput, output_result
         try:
             for sid, session in candidates:
                 binding = session.get('binding')
@@ -447,7 +447,7 @@ class ObservationOwner:
         session = self.owner.sessions.get(sid)
         if session is not None:
             session['output_failure_reported'] = True
-        from .runtime import PendingOutput
+        from .output_contract import PendingOutput
         pending = self.owner.pending.setdefault(self.identity(event),
             PendingOutput(event.result, event.origin_turn))
         pending.delivered = True

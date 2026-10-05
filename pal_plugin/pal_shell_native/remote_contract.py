@@ -1,13 +1,4 @@
-"""Resident boundary for optional remote backends (no RPC dependency)."""
-from typing import Protocol
+"""Compatibility exports for the shared remote interfaces."""
+from pal_shell_contracts import RemoteFailure, RemotePort
 
-
-class RemoteFailure(RuntimeError):
-    def __init__(self, code, message, *, effect='not_started', operation_id=''):
-        super().__init__(message)
-        self.code, self.effect, self.operation_id = code, effect, operation_id
-
-
-class RemotePort(Protocol):
-    async def request(self, target: int, method: str, params: dict, epoch: str | None = None) -> dict: ...
-    async def list(self, refresh: bool = False, *, target: int | None = None) -> list[dict]: ...
+__all__ = ["RemoteFailure", "RemotePort"]

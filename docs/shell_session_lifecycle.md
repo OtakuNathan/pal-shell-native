@@ -25,7 +25,7 @@ choices depend independently on attention and execution state.
 - `run_shell.wait_ms` waits for the initial response (default 300000 ms, 1000 for PTY).
   It returns a running session at expiry; it does not kill the process.
 - `timeout_ms` limits process lifetime. Omission means unlimited execution.
-- `shell_session` observation controls decide whether/when Pal receives another event.
+- `manage_shell_session` observation controls decide whether/when Pal receives another event.
 
 `read(wait_ms=0)` inspects or waits within a tool call. It never renews the deadline or
 creates a background watch. `watch(wait_ms, extend_by_ms=0)` immediately acknowledges
@@ -34,7 +34,7 @@ existing finite deadline. `extend(extend_by_ms)` only adds to that deadline. A f
 watch can restore attention; `unwatch` cancels pending unsolicited notifications and
 future watches without stopping execution. `terminate` still requests process exit.
 
-The existing indirect `shell_session` tool is called through `call_tool`. Returned
+The existing indirect `manage_shell_session` tool is called through `call_tool`. Returned
 conditional affordances include ready-to-use read/watch/unwatch arguments; a valid
 contract already in context does not need rediscovery. No automatic periodic wakeup
 is introduced. An unlimited command needs no extension; expired/terminating sessions
