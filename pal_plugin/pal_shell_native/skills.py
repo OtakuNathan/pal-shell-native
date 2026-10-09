@@ -17,7 +17,11 @@ class NativePluginProvider:
             activation_terms=("pal remote setup", "remote worker", "pal-shell-worker", "pal-shell-native",
                               "worker upgrade", "升级worker", "云主机升级", "远端升级", "remote host setup", "remote shell setup",
                               "远端接入", "远端安装", "远程主机配置", "安装remote端", "添加remote", "配置远端", "云主机接入"),
-            capability_refs=("search_skills", "inject_skill", "search_tools", "run_shell", "call_tool"),
+            capability_refs=(
+                "search_skills", "inject_skill", "search_tools", "run_shell", "call_tool",
+                "list_remote", "install_package", "list_plugins", "rescan_plugins",
+                "enable_plugin", "attach_plugin", "reload_plugin",
+            ),
             applicability_star=SkillApplicabilitySTAR(
                 situation="The user wants help adding a remote execution host to Pal.",
                 task="Prepare or install a matching remote worker and enroll the execution target.",

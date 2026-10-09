@@ -2,6 +2,19 @@
 from pal.execution.tool_facade import NextToolHint, ToolGuidance
 
 
+SHELL_RESULT_GUIDANCE = (
+    "kind=complete means a shell result was returned, not that the command succeeded. "
+    "effect=applied means execution or control took effect; it does not confirm task success. "
+    "Check status, returncode, signal and error before deciding what happened."
+)
+NONZERO_EXIT_GUIDANCE = (
+    "Read stdout and stderr before changing or repeating the command: a non-zero exit is the command's "
+    "reported result, not necessarily a mistake. rg/grep exit 1 means no matches, diff exit 1 means "
+    "differences, and test runners can report failing tests. Earlier command steps may already have "
+    "changed state; do not repeat them automatically."
+)
+
+
 RUN_GUIDANCE = ToolGuidance(
     purpose="Run a shell command; return its result or a retained session snapshot.",
     use_when=(
@@ -14,8 +27,8 @@ RUN_GUIDANCE = ToolGuidance(
         " Use tty=true for interactive terminal input. A session_id identifies retained execution; use status to distinguish running from terminal output."
         " Returning control while waiting does not complete the task. Continue independent reads or reasoning allowed by the current write gate; "
         " otherwise yield until a relevant event. Completion is delivered separately while the session is watched."
-        " Success requires status=exited and returncode=0."
-    ),
+        " Command success requires status=exited and returncode=0. "
+    ) + SHELL_RESULT_GUIDANCE + " " + NONZERO_EXIT_GUIDANCE,
     do_not_use_when=(
         "A dedicated file or Pal runtime/module/Bunshin introspection tool directly handles the task."
         " For Pal self-maintenance follow pal.self.maintenance and the active runtime policy."
@@ -49,8 +62,8 @@ SESSION_GUIDANCE = ToolGuidance(
         " watch requires positive wait_ms and accepts optional extend_by_ms; extend requires positive extend_by_ms;"
         " terminate/release/unwatch accept no controls. Omit controls not listed for the action."
         " Supply exactly one of session_id or output_ref. output_ref supports only read/release with no controls, including wait_ms."
-        " Deadline extension requires an unexpired, extendable finite deadline."
-    ),
+        " Deadline extension requires an unexpired, extendable finite deadline. "
+    ) + SHELL_RESULT_GUIDANCE,
     do_not_use_when=(
         "Do not invent IDs or use zero. Do not write or resize a non-PTY session, or release a running one."
         " Large output is preserved in an immutable local snapshot; search its file or use read_file."

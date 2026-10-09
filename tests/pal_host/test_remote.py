@@ -79,6 +79,18 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, tool_name, **args):
         return await self.runtime.execute_tool_async(new_tool_call(name=tool_name, args=args), turn_id='origin')
 
+    async def test_remote_command_failures_retain_cause_effect_and_model_recovery(self):
+        result = await self.tool('run_shell', target=1, cmd='printf remote-cause >&2; exit 7')
+        self.assertEqual(result.structured['returncode'], 7)
+        self.assertIn('remote-cause', result.llm_text)
+        self.assertIn('rg/grep exit 1 means no matches', result.llm_text)
+        await asyncio.gather(*tuple(self.owner.observations.acking.values()))
+        result = await self.tool('run_shell', target=1, cmd='true', cwd=str(self.path/'absent'))
+        self.assertEqual(result.structured['status'], 'failed')
+        self.assertIn('shell spawn', result.llm_text)
+        self.assertEqual(result.invocation_result.effect.value, 'not_started')
+        self.assertIn('command did not start', result.llm_text)
+
 
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pal.shared.diagnostics import exception_diagnostic
-
 from contextlib import suppress, asynccontextmanager
 import asyncio
 
@@ -18,7 +16,7 @@ from .output_contract import PendingOutput, output_result
 from .tools import session_affordances
 from .capabilities import SESSION_CAPABILITIES
 from pal_shell_contracts import RemoteFailure
-from .recovery import retry_read, LOGGER
+from .recovery import retry_read, exception_report, LOGGER
 
 
 REMOTE_PENDING_BYTES = 64 * 1024 * 1024
@@ -128,7 +126,7 @@ class NativeShellOwner:
                     turn_id=pending.turn_id, call_id=tool_call.call_id, budget=call.meta.get('budget')),
                 stage="output", identity=tool_call.call_id))
         except Exception as exc:
-            pending.failure = ("Command output could not be saved: " + str(exc) +
+            pending.failure = ("Command output could not be saved: " + exception_report(exc) +
                 ". Original output is retained. After resolving storage availability, retry exporting this retained output; do not rerun the command.")
             pending.raw = output_result({**result, "output_error": pending.failure})
         return pending.raw
@@ -404,6 +402,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                 async with self.shell_owner.shell.tool_admission(record.execution.effect_kind.value):
                     return await super()._call_record_async(*arguments)
         except RemoteFailure as exc:
+            recovery_error = ""
             # Reconcile only the original ticket. A lost reply never authorizes replay.
             if exc.operation_id and exc.effect != "not_started":
                 try:
@@ -418,12 +417,13 @@ class NativeExecutionRuntime(ExecutionRuntime):
                         return await self.shell_owner.stage(SimpleNamespace(meta={"tool_call": call, "turn_id": turn_id,
                             "execution_runtime": self, "budget": budget}), recovered)
                     return output_result(recovered)
-                except Exception:
+                except Exception as recovery_exc:
+                    recovery_error = "\nOutcome reconciliation also failed:\n" + exception_report(recovery_exc)
                     LOGGER.warning("shell operation unresolved identity=%s", exc.operation_id)
             hints = [ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {}},
                                    reason="Check whether the execution target is available.")]
             receipt = EffectReceipt(outcome=EffectOutcome(exc.effect), receipt={"operation_id": exc.operation_id})
-            message = exception_diagnostic(exc)
+            message = exception_report(exc) + recovery_error
             if exc.effect == "unknown":
                 message += "\nThe requested shell operation may have taken effect; its outcome could not be confirmed. Do not repeat it automatically."
             raise ToolExecutionError(message, error_code=exc.code, effect_receipt=receipt,
@@ -512,11 +512,13 @@ class NativeExecutionRuntime(ExecutionRuntime):
             return result
         if not isinstance(result, (CompleteResult,)):
             # Retry only normalization of retained output, never the tool handler.
+            recovery_errors = []
             if pending.raw is not None:
                 for _ in range(2):
                     try:
                         recovered = self._normalize_invocation_result(record, call, pending.raw, budget=kwargs.get("budget"), turn_id=kwargs.get("turn_id"))
-                    except Exception:
+                    except Exception as exc:
+                        recovery_errors.append(exception_report(exc))
                         continue
                     if isinstance(recovered, (CompleteResult,)):
                         # Retried normalization goes through the same shared
@@ -532,6 +534,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
                 payload = dict(payload or {})
                 hints = session_affordances({**payload, "output_error": pending.failure}, output_ref=call.call_id)
                 body = result.llm_text + "\n" + pending.failure
+                if recovery_errors:
+                    body += "\nOutput recovery also failed:\n" + "\n".join(dict.fromkeys(recovery_errors))
                 if payload.get("session_id"):
                     body += f"\nRetained session_id: {payload['session_id']}."
                 else:

@@ -44,8 +44,8 @@ class ListRemoteInput(StrictToolModel):
 def _target_summary(item):
     """Project decision-relevant facts; unknown observations stay unknown."""
     summary = {key: item[key] for key in (
-        "target", "name", "shortcut", "reachable", "probe_error", "needs_wake",
-        "requires_wake", "registered", "execution", "start_actions", "expected_offline",
+        "target", "name", "shortcut", "reachable", "probe_error", "needs_start",
+        "requires_start", "registered", "execution", "start_actions", "expected_offline",
         "os", "arch", "shell",
     ) if key in item}
     if "static" in item:
@@ -401,7 +401,8 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         owner = call.meta["execution_runtime"].shell_owner
         return self._result({"sessions": [
             {"session_id": sid, "cmd": item["cmd"], "watching": item.get("watching", True),
-             "last_observed_status": item.get("latest_status", "running"), "target": item.get("target", 0)}
+             "last_observed_status": item.get("latest_status", "running"), "target": item.get("target", 0),
+             **({"observation_error": item["observation_error"]} if item.get("observation_error") else {})}
             for sid, item in owner.sessions.items()]})
 
     async def shell_status_async(self, call):
@@ -421,9 +422,9 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         InputModel=ListRemoteInput, OutputModel=StructuredToolOutput, execution=INDIRECT_LOCAL_READ,
         async_handler_name="list_remote_async", metadata={"background_execution": True, "native_shell_action": "list_remote"}, guidance=ToolGuidance(
             purpose="List execution targets and their readiness; defaults to a compact summary.",
-            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed. Offline entries remain valid targets; use only configured explicit start actions.",
+            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed. Offline entries remain valid targets; start them via start_remote_target with a configured action.",
             do_not_use_when="A returned session already fixes its target.",
-            failure_next_steps="Offline entries remain valid targets; use only their configured explicit start actions. For deeper diagnosis, repeat with the target ID and view=detail.",
+            failure_next_steps="Offline entries remain valid targets; start them via start_remote_target with a configured action. For deeper diagnosis, repeat with the target ID and view=detail.",
         ),
     )
     def list_remote(self, call):
@@ -433,7 +434,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         owner = call.meta["execution_runtime"].shell_owner
         import os
         import platform
-        items = [{"target": 0, "name": "local", "requires_wake": False, "registered": True,
+        items = [{"target": 0, "name": "local", "requires_start": False, "registered": True,
                   "os": platform.system(), "arch": platform.machine(), "logical_cpus": os.cpu_count(),
                   "shell": {"executable": "/bin/bash", "invocation": ["-lc"]}}]
         target = call.args.get("target")
@@ -446,13 +447,25 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         view = call.args.get("view", "summary")
         if view == "summary":
             items = [_target_summary(item) for item in items]
-        return self._result({"targets": items, "remote_attached": owner.remote_port is not None, "view": view})
+        result = self._result({"targets": items, "remote_attached": owner.remote_port is not None, "view": view})
+        startable = [(item["target"], item.get("name"), item.get("start_actions"))
+                     for item in items if item.get("target") and item.get("needs_start") and item.get("start_actions")]
+        if startable:
+            from pal.execution.tool_facade import ToolAffordance
+            from dataclasses import replace
+            result = replace(result, affordances=[
+                ToolAffordance(tool="call_tool", arguments={"name": "start_remote_target", "args": {
+                    "target": target_id, "action": actions[0]}},
+                    reason=f"Target {name} reports needs_start; configured start action '{actions[0]}' is available.")
+                for target_id, name, actions in startable])
+        return result
 
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_start", aliases=("start_remote_target",),
         InputModel=RemoteStartInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
         async_handler_name="remote_start_async", metadata={"background_execution": True, "native_shell_action": "remote_start"}, guidance=ToolGuidance(
-            purpose="Explicitly invoke one preconfigured target startup action. Completion does not prove readiness; refresh target metadata to verify.",
+            search_objects=("wake", "waking", "boot", "startup"),
+            purpose="Explicitly invoke one preconfigured target startup action (wake or service start). Completion does not prove readiness; refresh target metadata to verify.",
             use_when="list_remote reports a configured wake or user-service start action that is needed.",
             do_not_use_when="A target is already available; this is not command replay or worker restart.",
             failure_next_steps="Refresh target metadata to verify readiness; action completion alone does not prove readiness.",

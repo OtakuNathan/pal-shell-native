@@ -120,14 +120,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.4.1.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.4.2.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
 pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.4.1.palpkg --runtime-root <runtime-root>
+pal package install ../pal-shell-native/dist/plugin-remote-0.4.2.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform
@@ -155,7 +155,9 @@ available. With no `config/remote.toml` or an empty target list, it attaches an 
 port without starting a Hub process or importing worker/RPC dependencies; local
 shell remains available. Python execution does not expose the required native port.
 Explicit persisted plugin enable/disable preferences remain authoritative.
-Create `<runtime-root>/config/remote.toml` and reload remote to add targets.
+Create `<runtime-root>/config/remote.toml` and use `reload_plugin(name="remote")`
+to load the changed targets into an enabled plugin. `attach_plugin` preserves an
+already attached instance; `rescan_plugins` discovers metadata without reloading it.
 Example (paths are target-specific installation choices):
 
 ```toml

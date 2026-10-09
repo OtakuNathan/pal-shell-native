@@ -39,8 +39,8 @@ On Pal's side verify the native execution backend, matching pal-shell-native/RPC
 package, execution:extensions port, and remote plugin discovery.
 The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
 it is not built into Pal. Install the matching native wheel in the host interpreter,
-then use install_package (or pal package install for offline preparation) with
-plugin-remote-0.4.1.palpkg. If the runtime still contains the retired managed
+then use `install_package` (or pal package install for offline preparation) with
+plugin-remote-0.4.2.palpkg. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
 packages/previous/builtin/remote and restores it on publication failure. Do not
@@ -178,13 +178,16 @@ verified. On Mac also distinguish stored credentials from readable Keychain.
 Metadata supported/configured alone is not E2E. On Linux verify approved apt update;
 never enable power to test access. PTY prompts never authorize credential injection.
 
-When authorized to connect the live instance, discover the actual plugin controls.
-Rescan discovers a new manifest; enable attaches a disabled remote plugin; attach
-reloads an existing enabled generation. Do not repeat activation already completed
+When authorized to connect the live instance, inspect `list_plugins` and use the
+control appropriate to its state. `rescan_plugins` discovers manifests;
+`enable_plugin(name="remote")` enables and attaches a disabled plugin.
+`attach_plugin(name="remote")` loads a detached enabled plugin and preserves an
+already attached instance. Use `reload_plugin(name="remote")` to load changed
+plugin code or target configuration. Do not repeat activation already completed
 by an installer. Remote defaults to enabled when native execution is available;
 missing/empty remote.toml attaches with no remote targets or Hub process. Existing
 explicit disable preferences are preserved. After adding target configuration,
-reload the enabled plugin rather than requiring an extra enable step.
+use `reload_plugin(name="remote")` for the enabled plugin.
 An optional unique shortcut in each target configuration creates run_shell_<shortcut>
 with that target fixed; omit it when no shortcut is needed. Shortcuts are compiled
 at plugin activation, so changing one requires a coordinated plugin reload.

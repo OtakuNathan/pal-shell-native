@@ -28,7 +28,7 @@ class BunshinShellSessions:
         return self.owner.has_work
 
     def handles_capability(self, name):
-        from pal.bunshin.v2.verification_builder import SHELL_EVIDENCE_CAPABILITIES
+        from pal.bunshin.verification_builder import SHELL_EVIDENCE_CAPABILITIES
         return name in SHELL_EVIDENCE_CAPABILITIES | SESSION_CAPABILITIES | {"op_exec_shell", "op_exec_session"}
 
     def execution_delegate(self, runtime, check_cancel):

@@ -5,12 +5,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pal.core import PalCore
 from pal.core.main_context import MainContext
 from pal.core.turns import TurnContinuation, LLMPreflightEffect, LLMRequestEffect, MailboxReplyEffect, EffectResult
 from pal.execution import register_with_core
 from pal.execution.contracts import ToolCallBudget
+from pal.execution.tool_facade import FailedResult, EffectOutcome, RetryDirective
 from pal_shell_native.runtime import NativeExecutionRuntime
 from pal_shell_native.events import attach_completion_source
 from pal.foundation import EventEnvelope
@@ -292,6 +294,33 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("retained", recovered.text)
         self.assertFalse(recovered.invocation_result.affordances)
 
+    async def test_background_nonzero_exit_delivers_recovery_to_model(self):
+        call = new_tool_call(name='run_shell', args={'cmd': 'sleep .03; printf background-cause >&2; exit 7', 'wait_ms': 0})
+        origin = self.origin(call)
+        result = await self.runtime.execute_tool_async(call, turn_id='origin')
+        await self.commit_origin(origin, call, result)
+        await self.wait_completion()
+        await self.pump()
+        text = self.model_inputs[0].text
+        self.assertIn('"returncode":7', text)
+        self.assertIn('background-cause', text)
+        self.assertIn('rg/grep exit 1 means no matches', text)
+        self.assertFalse(self.owner.pending)
+
+    async def test_completion_normalization_failure_retains_specific_cause(self):
+        call = new_tool_call(name='run_shell', args={'cmd': 'sleep .03; printf retained', 'wait_ms': 0})
+        origin = self.origin(call)
+        result = await self.runtime.execute_tool_async(call, turn_id='origin')
+        await self.commit_origin(origin, call, result)
+        await self.wait_completion()
+        failure = FailedResult(error_code='output_validation_failed', error='specific nested validation failure',
+            llm_text='specific nested validation failure', effect=EffectOutcome.APPLIED,
+            retry=RetryDirective.RECONCILE_FIRST)
+        with patch.object(self.runtime, 'deliver_invocation_result', return_value=failure):
+            await self.pump()
+        self.assertIn('specific nested validation failure', self.model_inputs[0].text)
+        self.assertTrue(self.owner.observations.failures)
+
     async def test_live_reads_and_invalid_session_have_result_specific_guidance(self):
         started = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
         sid = started.structured["session_id"]
@@ -302,7 +331,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         invalid = await self.session(9223372036854775806, action="read")
         self.assertFalse(invalid.ok)
         self.assertIn("do not replay the command", invalid.invocation_result.recovery_hint)
-        self.assertEqual(invalid.llm_text.count("do not replay the command"), 1)
+        metadata = json.loads(invalid.llm_text.rsplit('Tool result metadata: ', 1)[1])
+        self.assertEqual(metadata['recovery'], invalid.invocation_result.recovery_hint)
+        self.assertIn('invalid_session', invalid.llm_text)
 
     async def test_interrupt_before_l1_delivery_reaps_session(self):
         call = new_tool_call(name="run_shell", args={"cmd": "sleep 60", "wait_ms": 0})

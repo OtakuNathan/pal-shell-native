@@ -4,14 +4,14 @@ import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pal.core import PalCore
 from pal.core.main_context import MainContext
 from pal.execution import register_with_core
 from pal.memory import MemoryService
 from pal.llm.ir import LLMMessageIR, MessageRole
-from pal.shared.tool_protocol import ToolResultIR
+from pal.shared.tool_protocol import ToolResultIR, new_tool_call
 from pal_shell_native.adapter import Completion
 from pal_shell_native.observation_owner import NAMESPACE, session_key
 from pal_shell_native.runtime import NativeExecutionRuntime
@@ -97,6 +97,35 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.obs.latest[7].revision, 1)
         self.assertFalse(waiter.done())
         waiter.cancel()
+
+    async def test_refresh_failure_reaches_model_and_status_then_clears_on_fresh_evidence(self):
+        self.obs.record(self.raw())
+        self.project()
+        try:
+            raise ConnectionError('underlying state transport failure')
+        except ConnectionError as cause:
+            error = RuntimeError('cannot refresh state')
+            error.__cause__ = cause
+        self.shell.observe = AsyncMock(side_effect=error)
+        self.obs.refresh()
+        await asyncio.gather(*tuple(self.obs.refreshing.values()))
+        self.project()
+        text = self.memory.active_l1_turn('t').messages[-1].text
+        self.assertIn('underlying state transport failure', text)
+        self.assertIn('last observation', text)
+        result = await self.runtime.execute_tool_async(new_tool_call(name='call_tool', args={
+            'name': 'inspect_shell_status', 'args': {}}), turn_id='t')
+        self.assertIn('underlying state transport failure', result.llm_text)
+        before = self.memory.active_l1_turn('t')
+        self.project()
+        self.assertIs(self.memory.active_l1_turn('t'), before)
+        self.shell.observe = AsyncMock(return_value=self.raw())
+        self.obs.refresh()
+        await asyncio.gather(*tuple(self.obs.refreshing.values()))
+        self.project()
+        self.assertNotIn('observation_error', self.obs.latest[7].raw)
+        self.assertNotIn('observation_error', self.owner.sessions[7])
+        self.assertNotIn('observation_error', self.memory.active_l1_turn('t').messages[-1].text)
 
     async def test_new_turn_reuses_visible_state_without_a_new_message(self):
         self.obs.record(self.raw())

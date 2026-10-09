@@ -109,6 +109,17 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
     async def ack_ready(self):
         await asyncio.gather(*tuple(self.host.owner.observations.acking.values()))
 
+    async def test_role_background_nonzero_exit_reaches_model_with_recovery(self):
+        await self.tool('run_shell', {'cmd': 'sleep .03; printf role-cause >&2; exit 7', 'wait_ms': 0})
+        await self.observation_ready()
+        await self.host.before_model(self.memory, 'role', noop)
+        await self.ack_ready()
+        text = '\n'.join(message.text for message in self.messages())
+        self.assertIn('"returncode":7', text)
+        self.assertIn('role-cause', text)
+        self.assertIn('rg/grep exit 1 means no matches', text)
+        self.assertFalse(self.host.has_work)
+
     async def test_role_schema_indirect_controls_and_delivery_ack(self):
         generation = self.scoped.registry_generation
         self.assertIn("wait_ms", generation.record_for_alias("run_shell").input_schema["properties"])
@@ -346,10 +357,10 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             core.close()
 
     async def test_verification_wrapper_waits_for_terminal_and_records_evidence(self):
-        from pal.bunshin.v2.repository import BunshinV2Repository
-        from pal.bunshin.v2.submission_drafts import AUTHORING_CONTRACT_VERSION
-        from pal.bunshin.v2.work_items import update_checklist_tool_result
-        repository = BunshinV2Repository(self.root)
+        from pal.bunshin.repository import BunshinRepository
+        from pal.bunshin.submission_drafts import AUTHORING_CONTRACT_VERSION
+        from pal.bunshin.work_items import update_checklist_tool_result
+        repository = BunshinRepository(self.root)
         lease = repository.leases.claim_lease("verify", "role", ttl_seconds=60)
         workspace = {"runtime_root": str(self.root), "repo_path": str(self.root), "invocation_id": "role",
             "review_scratch_dir": str(self.root / "scratch"), "artifact_dir": str(self.root / "artifacts"),

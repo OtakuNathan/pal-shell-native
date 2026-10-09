@@ -279,7 +279,7 @@ class RemoteSlot:
                 },
                 'execution': self.execution.status(), 'runtime_changed': self.previous_epoch is not None,
                 'expected_offline': self.expected_offline, 'start_actions': list(self.config.start_actions),
-                'needs_wake': self.expected_offline or (reachable is False and bool(self.config.start_actions))}
+                'needs_start': self.expected_offline or (reachable is False and bool(self.config.start_actions))}
 
     async def start(self, action):
         async with self.lock:
