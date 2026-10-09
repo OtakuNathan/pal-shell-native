@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from pal.shared.diagnostics import exception_diagnostic, diagnostic_text
+from pal.shared.diagnostics import exception_diagnostic, diagnostic_text, exception_report, exception_summary
+from pal.foundation import utc_now
 
 import asyncio
 import os
@@ -38,19 +39,25 @@ class RemoteSlot:
         self.tunnel_diagnostics = None
         self.tunnel_stderr_transport = None
         self.tunnel_stderr = bytearray()
+        self.tunnel_stderr_path = ""
         self.directory = None
         self.cached = None
         self.last_error = ''
+        self.probe_details = {}
+        self.probed_at = None
         self.expected_offline = False
         self.closed = False
 
     @staticmethod
-    async def _drain_stderr(stream, tail):
+    async def _drain_stderr(stream, tail, path):
         if stream is None:
             return
-        while chunk := await stream.read(4096):
-            tail.extend(chunk)
-            del tail[:-8192]
+        with Path(path).open("wb") as log:
+            while chunk := await stream.read(4096):
+                log.write(chunk)
+                log.flush()
+                tail.extend(chunk)
+                del tail[:-8192]
 
     async def _spawn_with_stderr(self, argv, tail):
         # Own the pipe separately from the subprocess transport. A descendant
@@ -71,7 +78,9 @@ class RemoteSlot:
         except BaseException:
             source.close()
             raise
-        drain = asyncio.create_task(self._drain_stderr(reader, tail))
+        fd, self.tunnel_stderr_path = tempfile.mkstemp(prefix="pal-ssh-stderr-", suffix=".log")
+        os.close(fd)
+        drain = asyncio.create_task(self._drain_stderr(reader, tail, self.tunnel_stderr_path))
         return process, transport, drain
 
     @staticmethod
@@ -87,6 +96,10 @@ class RemoteSlot:
             # Diagnostic cleanup cannot replace the operation's failure. Closing
             # the owned transport feeds EOF even while descendants retain stderr.
             await asyncio.gather(drain, return_exceptions=True)
+
+    def _ssh_diagnostic(self):
+        preview = diagnostic_text(self.tunnel_stderr.decode('utf-8', errors='replace'), tail=True)
+        return preview + (f'; complete SSH stderr: {self.tunnel_stderr_path}' if self.tunnel_stderr_path else '')
 
     async def _disconnect(self):
         if self.lease:
@@ -136,7 +149,7 @@ class RemoteSlot:
                         self.tunnel_diagnostics = None
                         self.tunnel_stderr_transport = None
                         raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; cause: ' +
-                            diagnostic_text(self.tunnel_stderr.decode('utf-8', errors='replace'), tail=True))
+                            self._ssh_diagnostic())
                     await asyncio.sleep(.05)
         connection = Connection(path, client_id=c.client_id, private_key=load_private_key(c.client_key),
                                 worker_id=c.worker_id, executor=self.executor)
@@ -227,7 +240,7 @@ class RemoteSlot:
                 except (OSError, TimeoutError, ValueError) as exc:
                     await self._disconnect()
                     raise RemoteError('connection_unavailable',
-                        'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_diagnostic(exc) + '; SSH stderr: ' + diagnostic_text(self.tunnel_stderr.decode('utf-8', errors='replace'), tail=True)) from exc
+                        'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_diagnostic(exc) + '; SSH stderr: ' + self._ssh_diagnostic()) from exc
                 except BaseException:
                     await self._disconnect()
                     raise
@@ -257,18 +270,23 @@ class RemoteSlot:
     async def describe(self, refresh=False):
         reachable = None
         if refresh:
+            self.probed_at = utc_now()
             try:
                 self.cached = await self.request('metadata', {'refresh': True})
                 reachable = True
+                self.last_error = ""
+                self.probe_details = {}
                 if not self.cached.get('draining'):
                     self.expected_offline = False
             except RemoteError as exc:
                 reachable = False
-                self.last_error = exc.code
+                self.last_error = exception_summary(exc)
+                self.probe_details = {"code": exc.code, "error": exception_report(exc)}
         power = (self.cached or {}).get('power')
         shutdown = None if power is None else bool(power.get('shutdown') and power.get('policy') != 'disabled')
         return {'target': self.config.target, 'name': self.config.name, 'shortcut': self.config.shortcut, 'static': self.config.static,
                 'dynamic': self.cached, 'reachable': reachable, 'probe_error': self.last_error,
+                'probe_details': self.probe_details, 'probed_at': self.probed_at,
                 'management': {
                     'start': {'supported': bool(self.config.start_actions),
                               'reason': '' if self.config.start_actions else 'Start is not supported: no startup action is configured'},
@@ -279,32 +297,48 @@ class RemoteSlot:
                 },
                 'execution': self.execution.status(), 'runtime_changed': self.previous_epoch is not None,
                 'expected_offline': self.expected_offline, 'start_actions': list(self.config.start_actions),
-                'needs_start': self.expected_offline or (reachable is False and bool(self.config.start_actions))}
+                'needs_start': True if self.expected_offline else (False if reachable is True else None)}
 
     async def start(self, action):
         async with self.lock:
             argv = self.config.start_actions.get(action)
             if argv is None:
                 raise RemoteError('unsupported_start', 'No such configured start action')
-            tail = bytearray()
-            process, transport, drain = await self._spawn_with_stderr(argv, tail)
+            # Regular files retain both complete streams without descendants holding
+            # a pipe open and delaying observation of the parent process exit.
+            directory = Path(tempfile.mkdtemp(prefix='pal-remote-start-'))
+            stdout_path, stderr_path = directory / 'stdout.log', directory / 'stderr.log'
+            with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
+                process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                    stdout=stdout, stderr=stderr)
+            timed_out = False
             try:
                 code = await asyncio.wait_for(process.wait(), 30)
             except TimeoutError:
+                timed_out = True
                 process.kill()
                 await process.wait()
-                raise RemoteError('start_unknown', 'Start action timed out; inspect target before retrying; stderr: ' +
-                    diagnostic_text(tail.decode('utf-8', errors='replace'), tail=True), effect='unknown')
+                code = process.returncode
             except BaseException:
                 if process.returncode is None:
                     process.kill()
                 await process.wait()
                 raise
-            finally:
-                await self._finish_stderr(transport, drain)
+            output = {}
+            for name, path in (('stdout', stdout_path), ('stderr', stderr_path)):
+                with path.open('rb') as stream:
+                    preview = stream.read(8192)
+                output[name] = diagnostic_text(preview.decode('utf-8', errors='replace'))
+                output[name + '_path'] = str(path)
+                output[name + '_bytes'] = path.stat().st_size
+            output['output_note'] = 'Complete streams are retained at the returned paths; descendants may still append after parent exit.'
+            if timed_out:
+                raise RemoteError('start_unknown',
+                    f'Start action timed out; inspect target before retrying. Complete stdout: {stdout_path}; complete stderr: {stderr_path}.', effect='unknown')
             self.expected_offline = False
-            return {'status': 'start_action_completed', 'returncode': code, 'target': self.config.target,
-                    'readiness': 'unverified', 'stderr': diagnostic_text(tail.decode('utf-8', errors='replace'), tail=True)}
+            return {'status': 'start_action_completed' if code == 0 else 'start_action_failed',
+                    'returncode': code, 'target': self.config.target,
+                    'readiness': 'unverified', **output}
 
     async def close(self):
         self.closed = True

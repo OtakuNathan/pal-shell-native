@@ -16,6 +16,7 @@ NONZERO_EXIT_GUIDANCE = (
 
 
 RUN_GUIDANCE = ToolGuidance(
+    search_objects=("command", "commands"),
     purpose="Run a shell command; return its result or a retained session snapshot.",
     use_when=(
         "Execute commands, builds or tests. Prefer rg for repository text search and rg --files for file"
@@ -47,6 +48,8 @@ RUN_GUIDANCE = ToolGuidance(
 )
 
 SESSION_GUIDANCE = ToolGuidance(
+    search_objects=("session", "sessions", "output"),
+    search_enum_fields=("action",),
     purpose="Inspect or control an existing shell session without rerunning its command.",
     use_when=(
         "Use the returned session_id. read returns a full snapshot; wait_ms waits for exit (default zero,"
