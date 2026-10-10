@@ -9,11 +9,13 @@ from pal.shared.result_rendering import render_structured_for_llm
 from pal.shared import RuntimeStatus
 
 from .adapter import TERMINAL
-from .guidance import NONZERO_EXIT_GUIDANCE
+from .guidance import NONZERO_EXIT_GUIDANCE, RUNNING_SESSION_GUIDANCE
 
 
 def result_guidance(result):
     status = result.get("status")
+    if status in {"running", "terminating"}:
+        return RUNNING_SESSION_GUIDANCE
     if status == "failed" and "returncode" in result and result["returncode"] is None:
         return "The command did not start. Read error and correct the reported launch problem before retrying."
     if status == "failed":

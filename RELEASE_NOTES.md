@@ -1,3 +1,26 @@
+Unreleased: concurrent shell sessions without session-wide write exclusion.
+
+- Pal continues to dispatch each turn's tool calls sequentially. A retained shell
+  session no longer prevents another shell command or other write tools from
+  running, locally or on the same remote target.
+- Running results remind the agent to avoid conflicting input-file changes and
+  output writes, and to verify results again if relevant inputs changed.
+- Classified verification uses the same admission policy and still waits for its
+  execution result before recording evidence. Nested execution no longer rejects
+  itself through a host write lock.
+- Session ownership, output delivery, cancellation, capacity limits and lifecycle
+  checks remain. UNKNOWN remote operations stay retained and are not replayed;
+  independent commands can proceed. Controls on one session remain serialized.
+- Running sessions reserve retained-result capacity before spawning; concurrent
+  completions cannot evict unacknowledged output or exceed the configured bound.
+- Native API 2 lease methods retain releasable tokens for compatibility, without
+  granting exclusive write access. Remote protocol 3 is unchanged.
+- Activation requires the updated native binary and host plugin. Remote workers
+  need the updated native binary to allow concurrent sessions on their target.
+  Fixing the host verification self-lock alone does not require a worker update;
+  older workers remain compatible and keep their single-session restriction.
+  Source edits and successful tests do not activate an existing Pal or worker.
+
 0.4.2 names the owner in write admission rejections.
 
 - The native Runtime appends the active writer id to `write_busy` errors, so a

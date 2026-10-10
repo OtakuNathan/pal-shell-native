@@ -100,11 +100,9 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
         sid = result["session_id"]
         self.assertNotEqual(sid, 0)
         await until(ready.exists)
-        with self.assertRaisesRegex(ShellRejected, "write_busy"):
-            await self.runtime.run("true")
-        with self.assertRaisesRegex(ShellRejected, "write_busy"):
-            async with self.runtime.tool_admission("local_write"):
-                self.fail("write was admitted")
+        self.assertEqual((await self.runtime.run("true"))["returncode"], 0)
+        async with self.runtime.tool_admission("local_write"):
+            self.assertEqual((await self.runtime.read(sid))["status"], "running")
         async with self.runtime.tool_admission("local_read"):
             self.assertEqual((await self.runtime.read(sid))["status"], "running")
         finish.touch()
@@ -201,14 +199,36 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.interrupt_turn("background")
         self.assertEqual((await self.runtime.read(result["session_id"]))["status"], "running")
 
-    async def test_write_lease_reserves_same_context_both_directions(self):
+    async def test_legacy_write_leases_do_not_exclude_shell_or_nested_tools(self):
         async with self.runtime.tool_admission("local_write"):
-            with self.assertRaisesRegex(ShellRejected, "write_busy"):
-                await self.runtime.run("true")
-            with self.assertRaisesRegex(ShellRejected, "write_busy"):
-                async with self.runtime.tool_admission("external_write"):
-                    self.fail("concurrent write")
+            self.assertEqual((await self.runtime.run("true"))["returncode"], 0)
+            async with self.runtime.tool_admission("external_write"):
+                self.assertEqual((await self.runtime.run("true"))["returncode"], 0)
         self.assertEqual((await self.runtime.run("true"))["returncode"], 0)
+
+    async def test_concurrent_sessions_keep_output_and_cancellation_independent(self):
+        first_ready, second_ready = self.root / 'first-ready', self.root / 'second-ready'
+        first, second = await asyncio.gather(
+            self.runtime.run(f"printf first; printf first-error >&2; touch {shlex.quote(str(first_ready))}; sleep 60",
+                wait_ms=0, turn_id="first"),
+            self.runtime.run(f"printf second; printf second-error >&2; touch {shlex.quote(str(second_ready))}; sleep 60",
+                wait_ms=0, turn_id="second"),
+        )
+        self.assertNotEqual(first["session_id"], second["session_id"])
+        self.assertEqual(first["status"], "running")
+        self.assertEqual(second["status"], "running")
+        await until(lambda: first_ready.exists() and second_ready.exists())
+        await self.runtime.terminate(first["session_id"])
+        cancelled = await self.finish(first["session_id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual((cancelled['stdout'], cancelled['stderr']), ('first', 'first-error'))
+        self.assertEqual((await self.runtime.read(second["session_id"]))["status"], "running")
+        await self.runtime.release_output(cancelled)
+        await self.runtime.terminate(second["session_id"])
+        cancelled = await self.finish(second["session_id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual((cancelled['stdout'], cancelled['stderr']), ('second', 'second-error'))
+        await self.runtime.release_output(cancelled)
 
     async def test_contexts_are_independent_and_handles_are_scoped(self):
         other = ShellRuntime()

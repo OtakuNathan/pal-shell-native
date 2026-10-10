@@ -140,15 +140,14 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("role-done" in m.text and m.semantic_kind == "runtime_context_artifact" for m in self.messages()))
         self.assertFalse(any(isinstance(p, ToolResultIR) for m in self.messages() for p in m.parts))
 
-    async def test_background_output_pages_and_blocks_mutation_until_delivered(self):
+    async def test_background_output_remains_deliverable_during_other_writes(self):
         _, result = await self.tool("run_shell", {"cmd": "sleep .02; printf '%02000d' 1", "wait_ms": 0},
             budget=ToolCallBudget(max_output_chars=400, preview_chars=200))
         self.assertTrue(result.ok, result.text)
         await asyncio.sleep(.05)
-        _, blocked = await self.tool("write_file", {"file_path": str(self.root / "must-not-exist"), "content": "bad"})
-        self.assertFalse(blocked.ok)
-        self.assertIn("shell_write_busy", blocked.llm_text)
-        self.assertFalse((self.root / "must-not-exist").exists())
+        _, written = await self.tool("write_file", {"file_path": str(self.root / "independent.txt"), "content": "independent"})
+        self.assertTrue(written.ok, written.text)
+        self.assertEqual((self.root / "independent.txt").read_text(), "independent")
         await self.observation_ready()
         await self.host.before_model(self.memory, "role", noop)
         await self.ack_ready()
@@ -371,33 +370,45 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         initialized = update_checklist_tool_result(new_tool_call(name="op_bunshin_update_checklist", args={
             "plan": [{"step": "verify", "status": "completed"}]}), workspace)
         self.assertTrue(initialized.ok, initialized.text)
-        scope = BunshinScopedExecutionRuntime(self.runtime, ["op_bunshin_verification_run_compile_check"], workspace)
+        checks = [('compile_check', 0, 'PASS'), ('focused_test', 7, 'FAIL'), ('warning_check', 0, 'PASS')]
+        scope = BunshinScopedExecutionRuntime(self.runtime,
+            [f'op_bunshin_verification_run_{kind}' for kind, _, _ in checks], workspace,
+            role_execution_sessions=self.host, check_cancel=noop)
         self.assertIsNone(scope.registry_generation.record_for_alias("shell_recover_output"))
         original_run = self.host.owner.shell.run
-        entered = asyncio.Event()
-        proceed = asyncio.Event()
-        async def background(*args, **kwargs):
-            entered.set()
-            await proceed.wait()
-            return await original_run(*args, **{**kwargs, "wait_ms": 0})
-        call = new_tool_call(name="run_verification_compile_check", args={"name": "compile", "command": "sleep .02; printf verified", "path": "src/test.c"})
-        with patch.object(self.host.owner.shell, "run", side_effect=background):
-            task = asyncio.create_task(scope.execute_tool_async(call, turn_id="role"))
-            try:
-                await asyncio.wait_for(entered.wait(), 2)
-                _, blocked = await self.tool("run_shell", {"cmd": "printf must-not-run"})
-                self.assertFalse(blocked.ok)
-                self.assertIn("shell_write_busy", blocked.llm_text)
-            finally:
-                proceed.set()
-            result = await task
-        self.assertTrue(result.ok, result.text)
-        payload = result.structured.get("payload", result.structured)
-        self.assertEqual(payload["case"]["status"], "PASS", payload)
-        self.assertEqual(payload["execution"]["stdout"], "verified")
-        self.assertTrue(self.host.has_work, "keep output until the outer evidence result is committed")
-        await scope.acknowledge_tool_result_async(call.call_id, "role")
-        self.assertFalse(self.host.has_work)
+        for kind, exit_code, expected_status in checks:
+            with self.subTest(kind=kind):
+                entered = asyncio.Event()
+                proceed = asyncio.Event()
+                command = f'sleep .02; printf {kind}; exit {exit_code}'
+                async def background(*args, **kwargs):
+                    if (args[0] if args else kwargs.get('cmd')) == command:
+                        entered.set()
+                        await proceed.wait()
+                        kwargs = {**kwargs, 'wait_ms': 0}
+                    return await original_run(*args, **kwargs)
+                call = new_tool_call(name=f'run_verification_{kind}', args={
+                    'name': kind, 'command': command, 'path': 'src/test.c'})
+                with patch.object(self.host.owner.shell, 'run', side_effect=background):
+                    task = asyncio.create_task(scope.execute_tool_async(call, turn_id='role'))
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        self.assertFalse(task.done(), 'evidence must wait for its own execution')
+                        _, independent = await self.tool('run_shell', {'cmd': 'printf independent'})
+                        self.assertTrue(independent.ok, independent.text)
+                        self.assertEqual(independent.structured['stdout'], 'independent')
+                        with self.assertRaisesRegex(RuntimeError, 'execution_busy'):
+                            self.host.owner.check_idle()
+                    finally:
+                        proceed.set()
+                        result = await asyncio.wait_for(task, 5)
+                self.assertTrue(result.ok, result.text)
+                payload = result.structured.get('payload', result.structured)
+                self.assertEqual(payload['case']['status'], expected_status, payload)
+                self.assertEqual(payload['execution']['stdout'], kind)
+                self.assertTrue(self.host.has_work, 'keep output until the outer evidence result is committed')
+                await scope.acknowledge_tool_result_async(call.call_id, 'role')
+                self.assertFalse(self.host.has_work)
 
     async def test_linux_sandbox_imports_only_extension_and_runs_native_shell(self):
         if sys.platform != "linux" or not shutil.which("bwrap"):

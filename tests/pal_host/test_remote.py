@@ -1,6 +1,7 @@
 """Native target routing against real independent Runtime/RPC endpoints."""
 import asyncio
 from pathlib import Path
+import shlex
 import tempfile
 import unittest
 from uuid import uuid4
@@ -108,7 +109,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.worker.operations)
         self.assertFalse(self.hub.slots[1].execution.status()['blocked'])
 
-    async def test_unknown_claim_survives_hub_and_worker_replacement_only_blocks_its_target(self):
+    async def test_unknown_claim_survives_replacement_without_blocking_new_execution(self):
         slot = self.hub.slots[1]
         original = slot._request
         async def lose(method, params, epoch=None):
@@ -119,6 +120,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RemoteFailure):
             await self.owner.shell.run('printf uncertain', target=1, turn_id='origin')
         self.assertEqual(slot.execution.status()['reasons'], ['unknown'])
+        unknown_id = next(iter(slot.execution.operations))
         config = self.worker.config
         await self.worker.close()
         self.worker = await Worker(config).start()
@@ -127,11 +129,12 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.hub = RemoteHub([self.target])
         self.port = DirectPort(self.hub)
         self.owner.attach_remote(self.port)
-        # No status/list call is needed to reinstate the safety claim.
-        result = await self.tool('run_shell', target=1, cmd='printf must-not-replay')
-        self.assertFalse(result.ok)
-        self.assertIn('target_busy', result.llm_text)
-        self.assertFalse(self.worker.operations)
+        # Restore the original outcome without excluding an independent command.
+        result = await self.tool('run_shell', target=1, cmd='printf independent-remote')
+        self.assertTrue(result.ok, result.llm_text)
+        self.assertEqual(result.structured['stdout'], 'independent-remote')
+        self.assertNotIn(unknown_id, self.worker.operations)
+        self.assertEqual(self.hub.slots[1].execution.operations[unknown_id]['state'], 'unknown')
         local = await self.tool('run_shell', cmd='printf independent')
         self.assertTrue(local.ok, local.llm_text)
 
@@ -181,7 +184,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.ok, result.llm_text)
             self.assertIn(str(home / 'workspace'), result.llm_text)
 
-    async def test_remote_running_target_does_not_block_local_or_other_slot(self):
+    async def test_remote_running_sessions_allow_same_target_local_and_other_slot(self):
         from dataclasses import replace
         from pal_shell_remote.slot import RemoteSlot
         second = await Worker(WorkerConfig('worker2', 'pal', self.worker.config.client_public_key,
@@ -191,13 +194,18 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
                 socket_path=str(self.path/'worker2.sock'), shortcut=''), self.hub.executor)
             started = await self.tool('run_shell', target=1, cmd='sleep 30', wait_ms=0)
             self.assertTrue(started.ok, started.llm_text)
-            busy = await self.tool('run_shell', target=1, cmd='printf should-not-run')
-            self.assertFalse(busy.ok)
-            self.assertIn('target_busy', busy.llm_text)
-            for target in (0, 2):
+            other = await self.tool('run_shell', target=1, cmd='sleep 30', wait_ms=0)
+            self.assertTrue(other.ok, other.llm_text)
+            self.assertNotEqual(started.structured['session_id'], other.structured['session_id'])
+            for target in (0, 1, 2):
                 result = await self.tool('run_shell', target=target, cmd='printf independent')
                 self.assertTrue(result.ok, result.llm_text)
             stopped = await self.tool('call_tool', name='manage_shell_session', args={'session_id': started.structured['session_id'], 'action': 'terminate'})
+            self.assertTrue(stopped.ok, stopped.llm_text)
+            live = await self.tool('call_tool', name='read_shell_session', args={'session_id': other.structured['session_id']})
+            self.assertTrue(live.ok, live.llm_text)
+            self.assertEqual(live.structured['status'], 'running')
+            stopped = await self.tool('call_tool', name='terminate_shell_session', args={'session_id': other.structured['session_id']})
             self.assertTrue(stopped.ok, stopped.llm_text)
         finally:
             await second.close()
@@ -213,6 +221,31 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok, result.llm_text)
         self.assertNotEqual(old_epoch, self.hub.slots[1].epoch)
         self.assertIs(self.owner.remote_port, self.port)
+
+    async def test_concurrent_remote_results_and_output_release_are_independent(self):
+        shell = self.owner.shell
+        gates = [self.path / 'finish-first', self.path / 'finish-second']
+        async def run(label, gate):
+            command = (f'while [ ! -f {shlex.quote(str(gate))} ]; do sleep .01; done; '
+                f'printf {label}; printf {label}-error >&2')
+            return await shell.run(command, target=1, wait_ms=0, turn_id=label)
+        first, second = await asyncio.gather(run('first', gates[0]), run('second', gates[1]))
+        self.assertEqual(first['status'], 'running')
+        self.assertEqual(second['status'], 'running')
+        self.assertNotEqual(first['session_id'], second['session_id'])
+        self.assertNotEqual(first['output_id'], second['output_id'])
+        for index, (initial, label) in enumerate(((first, 'first'), (second, 'second'))):
+            gates[index].touch()
+            terminal = await shell.session_snapshot(initial['session_id'], wait_ms=5000)
+            self.assertEqual(terminal['status'], 'exited', terminal)
+            loaded = await shell.materialize(terminal)
+            self.assertEqual((loaded['stdout'], loaded['stderr']), (label, label + '-error'))
+            self.assertEqual(terminal['output_id'], initial['output_id'])
+            await shell.release_output(terminal)
+            if index == 0:
+                live = await shell.session_snapshot(second['session_id'])
+                self.assertEqual(live['status'], 'running')
+                self.assertEqual(live['output_id'], second['output_id'])
 
     async def test_output_download_resumes_validated_prefix_after_failure(self):
         shell = self.owner.shell

@@ -50,7 +50,7 @@ must not share ownership. Private keys never appear in tool parameters or result
   nonempty, unique `shortcut` (for example desktop, cloud or macos).
   Shortcuts allow 1–54 letters, digits, underscores or hyphens and are compiled
   at plugin activation; config edits require a coordinated plugin reload. It cannot accept an overriding target. Canonical action metadata, rather
-  than exact public aliases, controls native handoff and write admission.
+  than exact public aliases, controls native handoff and result ownership.
 
 The native run_shell guidance offers enrollment of newly reachable SSH hosts via
 `pal.remote.setup`, with user agreement before worker installation/configuration.
@@ -90,15 +90,17 @@ establish ownership after detach. Reset refuses unresolved remote work.
 Worker restart creates a new epoch. Old session state cannot be recovered and
 previous command effects cannot be inferred. The slot reconnects to the new epoch
 without reattaching the Hub or touching local execution. Old tickets are fenced
-before reaching the new Runtime. Unknown operations retain that target's write
-barrier even after restart; management queries remain available.
+before reaching the new Runtime. Unknown operations remain tracked even after
+restart and must not be replayed; independent commands can still execute.
 
-Local and remote execution admission are independent; each slot owns its running,
-submitting, approval and UNKNOWN claims. Busy targets reject immediately, without
-a new execution queue. Same-session mutations do not overlap; reads and reconciliation
-remain possible. Strict output-delivery scopes retain their target barrier until
-output acknowledgment. Host tickets restore these claims before a replacement Hub
-accepts new execution. Slow output transfers and completion polling on one target
+Local and remote sessions can execute concurrently, including multiple commands
+on the same target. Each slot retains its running, submitting, approval and UNKNOWN
+operations without using them as a target-wide write barrier. Same-session mutations
+do not overlap; an unknown control must be reconciled before further mutations of
+that session. Reads, termination and reconciliation remain possible. Strict output
+delivery retains each operation until output acknowledgment without excluding new
+execution. Host tickets restore these records before a replacement Hub accepts new
+execution. Slow output transfers and completion polling on one target
 do not serialize other targets. This version deliberately has no
 force-forget operation for lost effects and no recovery across a Pal process
 restart. An operator must reconcile effects before replacing that resident state.

@@ -130,6 +130,27 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_command('Start-Sleep -Seconds 30', timeout_ms=300)
         self.assertEqual(result['status'], 'timed_out')
 
+    async def test_concurrent_sessions_have_independent_cancellation(self):
+        first, second = await asyncio.gather(
+            self.run_command('Start-Sleep -Seconds 30', complete=False, wait_ms=0),
+            self.run_command('Start-Sleep -Seconds 30', complete=False, wait_ms=0),
+        )
+        self.assertEqual(first['status'], 'running')
+        self.assertEqual(second['status'], 'running')
+        self.assertNotEqual(first['session_id'], second['session_id'])
+        self.assertNotEqual(first['output_id'], second['output_id'])
+        for result in (first, second):
+            oid = uuid4().hex
+            await self.worker.handle('session', {'operation_id': oid,
+                'session_id': result['session_id'], 'action': 'terminate'})
+            reply = await self.worker.handle('query', {'operation_id': oid, 'wait_ms': 5000})
+            self.assertIsNone(reply['error'], reply)
+            terminal = await self.read_session(result['session_id'], 5000)
+            self.assertEqual(terminal['status'], 'cancelled')
+            if result is first:
+                self.assertEqual((await self.read_session(second['session_id'], 0))['status'], 'running')
+            await self.worker.handle('release', {'output_id': terminal['output_id']})
+
     async def test_termination_reaps_descendants(self):
         result = await self.run_command("$p=Start-Process ping.exe -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru; [Console]::Write($p.Id); Start-Sleep -Seconds 60", complete=False)
         async with asyncio.timeout(15):

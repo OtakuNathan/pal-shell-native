@@ -40,6 +40,7 @@ public:
     void release_output(id_t request, id_t output);
     void acknowledge(id_t request, id_t session, bool terminal);
     void cancel_request(id_t request, id_t target_request);
+    // API 2 compatibility tokens; these do not grant exclusive write access.
     void acquire_write(id_t request);
     void release_write(id_t request, id_t lease);
     void close();

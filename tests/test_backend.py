@@ -100,10 +100,65 @@ class BackendTests(unittest.TestCase):
         self.assertEqual((result['status'], result['stdout_bytes']), ('exited', b'done'))
         self.call('release_output', result['output_id'])
 
+    def test_concurrent_sessions_and_legacy_leases_keep_separate_identity(self):
+        first = self.run_shell('sleep 30', wait=0)
+        second = self.run_shell('sleep 30', wait=0)
+        self.assertEqual(first['status'], 'running')
+        self.assertEqual(second['status'], 'running')
+        self.assertNotEqual(first['session_id'], second['session_id'])
+        lease1 = self.call('acquire_write')['session_id']
+        lease2 = self.call('acquire_write')['session_id']
+        self.assertNotEqual(lease1, lease2)
+        independent = self.run_shell('printf independent')
+        self.assertEqual(independent['stdout_bytes'], b'independent')
+        self.call('release_output', independent['output_id'])
+        self.assertEqual(self.call('release_write', lease1)['status'], 'write_released')
+        self.assertEqual(self.call('release_write', lease1)['status'], 'rejected')
+        self.assertEqual(self.call('release_write', second['session_id'])['status'], 'rejected')
+        self.assertEqual(self.call('release_write', lease2)['status'], 'write_released')
+        self.call('terminate', first['session_id'])
+        result = self.call('read', first['session_id'], 5000)
+        self.assertEqual(result['status'], 'cancelled')
+        self.call('release_output', result['output_id'])
+        self.assertEqual(self.call('read', second['session_id'], 0)['status'], 'running')
+        self.call('terminate', second['session_id'])
+        result = self.call('read', second['session_id'], 5000)
+        self.assertEqual(result['status'], 'cancelled')
+        self.call('release_output', result['output_id'])
+
     def test_hard_deadline(self):
         event = self.run_shell('sleep 30', timeout=200)
         self.assertEqual(event['status'], 'timed_out')
         self.call('release_output', event['output_id'])
+
+    def test_running_sessions_reserve_capacity_for_unacknowledged_results(self):
+        self.runtime.close()
+        self.runtime = native.Runtime(2)
+        native.connect(self.runtime, self.events.put)
+        sessions = [self.run_shell('sleep 30', wait=0) for _ in range(2)]
+        self.assertTrue(all(event['status'] == 'running' for event in sessions))
+        with tempfile.TemporaryDirectory() as directory:
+            import shlex
+            marker = Path(directory) / 'must-not-run'
+            rejected = self.run_shell(f'touch {shlex.quote(str(marker))}', wait=0)
+            self.assertEqual(rejected['status'], 'rejected', rejected)
+            self.assertIn('result_capacity', rejected['error'])
+            self.assertFalse(marker.exists())
+        # A handoff ACK or finishing alone must not discard undelivered output.
+        for event in sessions:
+            self.call('acknowledge', event['session_id'], False)
+            self.call('terminate', event['session_id'])
+            result = self.call('read', event['session_id'], 5000)
+            self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(self.run_shell('true')['status'], 'rejected')
+        self.call('acknowledge', sessions[0]['session_id'], True)
+        next_session = self.run_shell('sleep 30', wait=0)
+        self.assertEqual(next_session['status'], 'running')
+        # Only the acknowledged result was evicted to make room.
+        self.assertEqual(self.call('read', sessions[0]['session_id'], 0)['status'], 'rejected')
+        self.assertEqual(self.call('read', sessions[1]['session_id'], 0)['status'], 'cancelled')
+        self.call('release_output', sessions[1]['output_id'])
+        self.assertEqual(self.run_shell('true')['status'], 'exited')
 
     def test_close_reaps_child(self):
         # PID is written only after exec, so the assertion cannot accidentally

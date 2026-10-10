@@ -181,17 +181,21 @@ class RemoteSlot:
         if method == 'commit_privileged' and oid in self.execution.operations:
             self.execution.operations[oid]['unsigned'] = False
         lock = None
+        control_epoch = epoch or self.epoch
         if method == 'session' and params.get('action') not in {'read', 'release', 'terminate'}:
-            if any(item['state'] == 'unknown' for item in self.execution.operations.values()):
-                raise RemoteError('target_busy', 'Reconcile unknown target operations before another session mutation')
+            if any(item['state'] == 'unknown' and item.get('epoch') == control_epoch
+                   and item.get('session_id') == params['session_id']
+                   for item in self.execution.operations.values()):
+                raise RemoteError('target_busy', 'Reconcile unknown operations for this session before another mutation')
         if method == 'session' and params.get('action') != 'read':
-            lock = self.session_locks.setdefault((epoch, params['session_id']), asyncio.Lock())
+            session_key = (control_epoch, params['session_id'])
+            lock = self.session_locks.setdefault(session_key, asyncio.Lock())
             if lock.locked():
                 raise RemoteError('target_busy', f'Target {self.config.target} session control is busy')
             await lock.acquire()
         control = method == 'session' and params.get('action') not in {'read', 'release'}
         if control:
-            self.execution.operations[oid] = dict(operation_id=oid, epoch=epoch, state='submitting',
+            self.execution.operations[oid] = dict(operation_id=oid, epoch=control_epoch, state='submitting',
                 session_id=params['session_id'], output_id='', hold_output=False, control=True)
         admitted = False
         try:
@@ -224,7 +228,7 @@ class RemoteSlot:
         finally:
             if lock is not None:
                 lock.release()
-                self.session_locks.pop((epoch, params['session_id']), None)
+                self.session_locks.pop(session_key, None)
 
     async def _request(self, method, params, epoch=None):
         async with self.lock:

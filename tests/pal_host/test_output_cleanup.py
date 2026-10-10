@@ -51,6 +51,29 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.owner.pending[call] = PendingOutput(value, 'turn', prepared=True)
         return Completion(value['session_id'], 'turn', value)
 
+    async def test_nested_and_cancelled_calls_preserve_detach_accounting(self):
+        entered = asyncio.Event()
+        async def waiting():
+            async with self.owner.tool_scope():
+                entered.set()
+                await asyncio.Event().wait()
+        async with self.owner.tool_scope():
+            task = asyncio.create_task(waiting())
+            try:
+                await entered.wait()
+                self.assertEqual(self.owner.active_calls, 2)
+                with self.assertRaisesRegex(RuntimeError, 'execution_busy'):
+                    self.owner.check_idle()
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            self.assertEqual(self.owner.active_calls, 1)
+            with self.assertRaisesRegex(RuntimeError, 'execution_busy'):
+                self.owner.check_idle()
+        self.assertEqual(self.owner.active_calls, 0)
+        self.owner._shell = None
+        self.owner.check_idle()
+
     async def test_commit_does_not_wait_for_release_and_duplicate_commit_shares_task(self):
         event = self.pending()
         await asyncio.wait_for(self.owner.commit('call'), 1)

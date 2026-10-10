@@ -43,6 +43,30 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, alias, args):
         return await self.runtime.execute_tool_async(new_tool_call(name=alias, args=args), turn_id='test')
 
+    async def test_running_session_reports_concurrency_guidance_and_nonblocking_status(self):
+        result = await self.tool('run_shell', {'cmd': 'sleep 60', 'wait_ms': 0})
+        self.assertTrue(result.ok, result.llm_text)
+        self.assertIn('still running in the background', result.llm_text)
+        self.assertIn('Avoid changing its input files', result.llm_text)
+        self.assertIn('verified again', result.llm_text)
+        status = await self.tool('call_tool', {'name': 'inspect_shell_status', 'args': {}})
+        self.assertTrue(status.ok, status.llm_text)
+        self.assertFalse(status.structured['targets'][0]['execution']['blocked'])
+        self.assertTrue(status.structured['targets'][0]['execution']['has_work'])
+        unwatched = await self.tool('call_tool', {'name': 'unwatch_shell_session', 'args': {
+            'session_id': result.structured['session_id']}})
+        self.assertTrue(unwatched.ok, unwatched.llm_text)
+        status = await self.tool('call_tool', {'name': 'inspect_shell_status', 'args': {}})
+        self.assertFalse(status.structured['targets'][0]['execution']['blocked'])
+        self.assertTrue(status.structured['targets'][0]['execution']['has_work'])
+        await self.tool('call_tool', {'name': 'terminate_shell_session', 'args': {
+            'session_id': result.structured['session_id']}})
+        terminal = await self.tool('call_tool', {'name': 'read_shell_session', 'args': {
+            'session_id': result.structured['session_id'], 'wait_ms': 5000}})
+        self.assertTrue(terminal.ok, terminal.llm_text)
+        self.assertEqual(terminal.structured['status'], 'cancelled')
+        self.assertNotIn('still running in the background', terminal.llm_text)
+
     async def test_nonzero_exit_is_explained_in_description_and_model_result(self):
         description = await self.tool('read_tool', {'name': 'run_shell'})
         self.assertIn('kind=complete means a shell result was returned', description.llm_text)
@@ -123,14 +147,16 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('specific journal query failure', result.llm_text)
         self.assertIn('Do not repeat it automatically', result.llm_text)
 
-    async def test_busy_recovery_keeps_status_entry_for_tracked_sessions(self):
+    async def test_running_sessions_remain_inspectable_after_other_execution(self):
         started = await self.tool('run_shell', {'cmd': 'sleep 60', 'wait_ms': 0})
         self.assertTrue(started.ok, started.llm_text)
-        rejected = await self.tool('run_shell', {'cmd': 'true'})
-        self.assertFalse(rejected.ok)
-        actions = rejected.invocation_result.affordances
-        self.assertTrue(any(a.arguments.get('name') == 'inspect_shell_status' for a in actions), rejected.llm_text)
-        self.assertIn('last observed', rejected.llm_text)
+        independent = await self.tool('run_shell', {'cmd': 'true'})
+        self.assertTrue(independent.ok, independent.llm_text)
+        inspected = await self.tool('call_tool', {'name': 'inspect_shell_status', 'args': {}})
+        self.assertTrue(inspected.ok, inspected.llm_text)
+        sessions = {item['session_id']: item for item in inspected.structured['sessions']}
+        self.assertIn(started.structured['session_id'], sessions)
+        self.assertEqual(sessions[started.structured['session_id']]['last_observed_status'], 'running')
         stopped = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {'session_id': started.structured['session_id'], 'action': 'terminate'}})
         self.assertTrue(stopped.ok, stopped.llm_text)
 
@@ -215,7 +241,11 @@ class RemoteDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             result = await slot.start('wake')
             self.assertEqual(result['returncode'], 7)
             self.assertEqual(result['readiness'], 'unverified')
-            self.assertIn('specific-start-failure', result['stderr'])
+            # The bounded preview may omit the tail; the retained file must not.
+            stderr = Path(result['stderr_path']).read_text()
+            self.assertEqual(stderr, 'x' * 20000 + 'specific-start-failure')
+            self.assertEqual(result['stderr_bytes'], len(stderr.encode()))
+            self.assertIn('Complete streams are retained', result['output_note'])
             self.assertLess(len(result['stderr']), 2100)
         finally:
             await slot.close()

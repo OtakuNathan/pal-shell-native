@@ -93,6 +93,65 @@ class SlotQueueTests(unittest.IsolatedAsyncioTestCase):
             while len(self.slot.admission.waiters) != count:
                 await asyncio.sleep(.001)
 
+    async def test_unknown_session_control_does_not_block_another_session(self):
+        sessions = []
+        for oid in ('first', 'second'):
+            await self.slot.request('submit', {'operation_id': oid, 'cmd': 'sleep 30', 'wait_ms': 0})
+            result = await self.slot.request('query', {'operation_id': oid, 'wait_ms': 5000})
+            self.assertIsNone(result['error'], result)
+            sessions.append(result['result']['session_id'])
+        self.slot.execution.restore([dict(operation_id='uncertain-control', epoch=self.slot.epoch,
+            state='unknown', session_id=sessions[0], output_id='', control=True),
+            dict(operation_id='old-control', epoch='previous-runtime', state='unknown',
+                session_id=sessions[1], output_id='', control=True)])
+        with self.assertRaises(RemoteError) as error:
+            await self.slot.request('session', {'operation_id': 'same-session',
+                'session_id': sessions[0], 'action': 'unwatch'})
+        self.assertEqual(error.exception.code, 'target_busy')
+        self.assertNotIn('same-session', self.worker.operations)
+        await self.slot.request('session', {'operation_id': 'other-session',
+            'session_id': sessions[1], 'action': 'unwatch'})
+        result = await self.slot.request('query', {'operation_id': 'other-session', 'wait_ms': 5000})
+        self.assertIsNone(result['error'], result)
+        self.assertEqual(result['result']['status'], 'running')
+        self.assertFalse(result['result']['watching'])
+        self.assertEqual(self.slot.execution.operations['uncertain-control']['state'], 'unknown')
+        self.assertEqual(self.slot.execution.operations['old-control']['state'], 'unknown')
+
+    async def test_inflight_session_control_excludes_only_its_own_session(self):
+        sessions = []
+        for oid in ('first', 'second'):
+            await self.slot.request('submit', {'operation_id': oid, 'cmd': 'sleep 30', 'wait_ms': 0})
+            result = await self.slot.request('query', {'operation_id': oid, 'wait_ms': 5000})
+            self.assertIsNone(result['error'], result)
+            sessions.append(result['result']['session_id'])
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        original = self.slot._request
+        async def hold(method, params, epoch=None):
+            if params.get('operation_id') == 'held-control':
+                entered.set()
+                await proceed.wait()
+            return await original(method, params, epoch)
+        self.slot._request = hold
+        task = self.task('session', {'operation_id': 'held-control',
+            'session_id': sessions[0], 'action': 'unwatch'})
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            with self.assertRaises(RemoteError) as error:
+                await self.slot.request('session', {'operation_id': 'conflicting-control',
+                    'session_id': sessions[0], 'action': 'unwatch'}, epoch=self.slot.epoch)
+            self.assertEqual(error.exception.code, 'target_busy')
+            self.assertNotIn('conflicting-control', self.worker.operations)
+            await self.slot.request('session', {'operation_id': 'independent-control',
+                'session_id': sessions[1], 'action': 'unwatch'})
+            result = await self.slot.request('query', {'operation_id': 'independent-control', 'wait_ms': 5000})
+            self.assertIsNone(result['error'], result)
+            self.assertFalse(result['result']['watching'])
+        finally:
+            proceed.set()
+            await asyncio.wait_for(task, 3)
+        self.assertFalse(self.slot.session_locks)
+
     async def test_33rd_request_waits_and_executes_once_after_capacity_returns(self):
         await self.saturated()
         queued = self.task('submit', {'operation_id':'queued','cmd':'printf queued','wait_ms':0})

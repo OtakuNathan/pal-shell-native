@@ -572,15 +572,15 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(new.ok, new.text)
         self.assertEqual(new.structured["stdout"], "reset")
 
-    async def test_production_overlay_shares_native_write_gate(self):
+    async def test_production_overlay_shares_sessions_and_allows_new_execution(self):
         from pal.bunshin.scoped_execution import _ExecutionOverlay
         record = self.runtime.registry_generation.record_for_alias("run_shell")
         overlay = _ExecutionOverlay(self.runtime, [record.canonical_path], guidance_overrides={})
         self.assertIs(overlay.runtime.shell_owner, self.owner)
         await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
-        blocked = await overlay.runtime.execute_tool_async(new_tool_call(name="run_shell", args={"cmd": "true"}))
-        self.assertFalse(blocked.ok)
-        self.assertIn("shell_write_busy", blocked.text)
+        result = await overlay.runtime.execute_tool_async(new_tool_call(name="run_shell", args={"cmd": "true"}))
+        self.assertTrue(result.ok, result.text)
+        self.assertEqual(result.structured["returncode"], 0)
 
     async def test_shutdown_quiesces_native_before_execution_snapshot(self):
         await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})

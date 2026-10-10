@@ -120,10 +120,20 @@ PYTHONPATH=pal_plugin:tests/pal_host_support python -m unittest discover -s test
 ## Ownership and limits
 
 The extension owns native executors, process groups, PTYs, output files and
-session IDs. The plugin connects asyncio delivery, write admission, approvals and model wakeups
+session IDs. The plugin connects asyncio delivery, approvals and model wakeups
 to Pal's generic event, L1, result pager and tool registry contracts. A response wait
 expiring exposes a session; a hard timeout cancels the process. Small output is
 returned inline and large output is retained in files for Pal's existing pager.
+
+Pal dispatches a turn's tool calls sequentially. After a command returns a running
+session, later tools and other shell commands can execute while it continues,
+including on the same remote target. Running results remind the agent to avoid
+changing that command's input files or writing the same output locations; changed
+inputs may require verification again. Sessions retain their own output, input,
+cancellation and completion state without holding exclusive write access.
+Each running command reserves a retained-result slot before spawning. The
+configured capacity bounds running commands plus retained results; only delivered
+terminal results may be evicted to admit a new command.
 
 This is a process execution backend, not a sandbox or durable process supervisor.
 Close runtimes before Python finalization. Live sessions cannot resume after a
@@ -291,8 +301,8 @@ independent and optional. Native control methods take a request ID and session I
 `watch(request, session, wait_ms, extend_by_ms)`, `extend(request, session, delta)`
 and `unwatch(request, session)`. Watch returns immediately, replaces one pending
 watch, and can atomically extend a finite deadline. Unwatch suppresses future model
-notifications; it does not terminate the process, release its running write lease,
-or detach it from its Runtime's lifetime. Read never rearms or renews anything.
+notifications; it does not terminate the process or detach it from its Runtime's
+lifetime. Read never rearms or renews anything.
 
 Snapshots carry `event_kind`, `event_sequence`, `watch_generation`, `watching`,
 `elapsed_ms`, nullable `remaining_ms`, and nullable `wake_remaining_ms`. Unsolicited

@@ -44,6 +44,19 @@ See [installation](../README.md), [remote setup](remote-shell.md), and
 
 ## Execution result boundary
 
+Pal's turn loop dispatches tool calls sequentially, but a shell command can return
+a running session and continue while later tools execute. Active sessions and
+undelivered output do not reserve exclusive write access. The host tracks in-flight
+calls to prevent detach without rejecting nested execution. Native state
+changes still run on the Runtime's reactor, and session controls keep their
+existing synchronization.
+
+Running shell results tell the agent to avoid modifying the command's input files
+or concurrently writing the same output locations. Changed inputs may require
+verification again. This policy also applies to classified verification; recording
+evidence does not introduce a separate write lock. Agents choose nonconflicting
+work using the existing tool contracts and execution results.
+
 Model-facing results use an explicit execution-field allowlist. Session state,
 exit status, stdout/stderr, relevant deadlines and next-step affordances are public.
 Epochs, event sequence/generation, byte cursors, claims and ACK/journal records are

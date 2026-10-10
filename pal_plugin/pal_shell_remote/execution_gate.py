@@ -1,4 +1,4 @@
-"""Target-owned execution admission, independent of transport capacity."""
+"""Retained per-operation outcomes, independent of concurrent execution."""
 from pal_shell_worker.protocol import RemoteError, TERMINAL
 
 
@@ -18,9 +18,6 @@ class ExecutionGate:
             if self.operations[operation_id].get('epoch') != epoch:
                 raise RemoteError('runtime_changed', 'Operation belongs to another Runtime', effect='unknown')
             return
-        if self.operations:
-            raise RemoteError('target_busy', f'Target {self.target} is busy: ' +
-                              ', '.join(sorted({v['state'] for v in self.operations.values()})))
         self.operations[operation_id] = dict(operation_id=operation_id, epoch=epoch,
             state='submitting', session_id=0, output_id='', hold_output=hold_output)
 
@@ -70,5 +67,5 @@ class ExecutionGate:
                 self.operations.pop(oid, None)
 
     def status(self):
-        return {'blocked': bool(self.operations),
+        return {'blocked': False, 'has_work': bool(self.operations),
                 'reasons': sorted({v['state'] for v in self.operations.values()})}

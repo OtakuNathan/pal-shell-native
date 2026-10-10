@@ -184,24 +184,23 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(original.ok, original.text)
         self.assertEqual(original.structured["stdout"], "original")
 
-    async def test_real_file_write_is_rejected_while_native_shell_runs(self):
+    async def test_file_write_and_new_shell_are_allowed_while_native_shell_runs(self):
         result = await self.tool("prototype_run_shell", cmd="sleep 60", wait_ms=0)
         self.assertTrue(result.ok, result.text)
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root) / "blocked.txt")
             spec = self.runtime.registry_generation.record_for_alias("write_file")
-            # Match actual registry schema; use a valid write so rejection proves admission.
+            # Exercise a real file write while the background process remains live.
             fields = spec.input_schema["properties"]
             args = {("file_path" if "file_path" in fields else "path"): path, "content": "bad"}
             write = await self.tool("write_file", **args)
-            self.assertFalse(write.ok)
-            self.assertIn("shell_write_busy", str(write.structured))
-            self.assertFalse(Path(path).exists())
-        blocked_shell = await self.tool("run_shell", cmd="printf should-not-run")
-        self.assertFalse(blocked_shell.ok)
-        self.assertIn("shell_write_busy", str(blocked_shell.structured))
+            self.assertTrue(write.ok, write.text)
+            self.assertEqual(Path(path).read_text(), "bad")
+        other_shell = await self.tool("run_shell", cmd="printf independent")
+        self.assertTrue(other_shell.ok, other_shell.text)
+        self.assertEqual(other_shell.structured["stdout"], "independent")
 
-    async def test_indirect_registry_projection_cannot_bypass_write_gate(self):
+    async def test_indirect_registry_projection_allows_independent_shell(self):
         # Exercise call_tool's recursive resolution with an indirect projection
         # of a real binding, the same immutable-record mechanism used by roles.
         generation = self.runtime.registry_generation
@@ -219,8 +218,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._registry_generation = projected
         await self.host.shell.run("sleep 60", wait_ms=0)
         result = await self.tool("call_tool", name="run_shell", args={"cmd": "true"})
-        self.assertFalse(result.ok)
-        self.assertIn("shell_write_busy", str(result.structured))
+        self.assertTrue(result.ok, result.text)
+        self.assertEqual(result.structured["returncode"], 0)
 
     async def test_completion_is_separate_from_closed_tool_protocol(self):
         call = new_tool_call(name="prototype_run_shell", args={"cmd": "sleep .05; printf done", "wait_ms": 0})
@@ -329,15 +328,15 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         rendered = Path(refs[0]["path"]).read_text()
         self.assertTrue(json.loads(rendered)["stdout"].endswith("END"))
 
-    async def test_bunshin_overlay_uses_same_native_write_owner(self):
+    async def test_bunshin_overlay_shares_sessions_without_exclusive_write_owner(self):
         from pal.bunshin.scoped_execution import _ExecutionOverlay
         original = self.runtime.registry_generation.record_for_alias("run_shell")
         overlay = _ExecutionOverlay(self.runtime, [original.canonical_path], guidance_overrides={})
         guarded = PrototypeExecutionRuntime.project_view(overlay.runtime, self.host.shell)
         await self.host.shell.run("sleep 60", wait_ms=0)
         result = await guarded.execute_tool_async(new_tool_call(name="run_shell", args={"cmd": "true"}))
-        self.assertFalse(result.ok)
-        self.assertIn("shell_write_busy", str(result.structured))
+        self.assertTrue(result.ok, result.text)
+        self.assertEqual(result.structured["returncode"], 0)
 
     async def test_acknowledgement_retry_does_not_repeat_consumed_observation(self):
         original = self.host.shell.acknowledge_completion

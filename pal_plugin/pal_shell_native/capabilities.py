@@ -407,9 +407,13 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             for sid, item in owner.sessions.items()]})
 
     async def shell_status_async(self, call):
+        from .adapter import TERMINAL
         owner = call.meta['execution_runtime'].shell_owner
         payload = self.shell_status(call).structured
-        targets = [{'target': 0, 'execution': {'blocked': owner.completion_blocked_for(0)}}]
+        local_work = owner.completion_blocked_for(0) or any(
+            item.get('target', 0) == 0 and item.get('latest_status') not in TERMINAL
+            for item in owner.sessions.values())
+        targets = [{'target': 0, 'execution': {'blocked': False, 'has_work': bool(local_work)}}]
         if owner.remote_port:
             if owner._shell:
                 for target in {t.target for t in owner.shell.operations.values()}:

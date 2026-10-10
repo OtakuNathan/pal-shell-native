@@ -13,6 +13,11 @@ NONZERO_EXIT_GUIDANCE = (
     "differences, and test runners can report failing tests. Earlier command steps may already have "
     "changed state; do not repeat them automatically."
 )
+RUNNING_SESSION_GUIDANCE = (
+    "This shell is still running in the background. You may continue calling tools. "
+    "Avoid changing its input files or writing to the same output locations with other operations: "
+    "results may become inconsistent. If relevant inputs change, the result may need to be verified again."
+)
 
 
 RUN_GUIDANCE = ToolGuidance(
@@ -26,8 +31,9 @@ RUN_GUIDANCE = ToolGuidance(
         " directly to preserve full output. wait_ms controls response waiting (default five minutes,"
         " one second for a PTY), not process lifetime; timeout_ms sets an optional hard deadline."
         " Use tty=true for interactive terminal input. A session_id identifies retained execution; use status to distinguish running from terminal output."
-        " Returning control while waiting does not complete the task. Continue independent reads or reasoning allowed by the current write gate; "
-        " otherwise yield until a relevant event. Completion is delivered separately while the session is watched."
+        " Returning control while waiting does not complete the task. Continue independent work or yield until a relevant event. "
+        "Completion is delivered separately while the session is watched. "
+        + RUNNING_SESSION_GUIDANCE +
         " Command success requires status=exited and returncode=0. "
     ) + SHELL_RESULT_GUIDANCE + " " + NONZERO_EXIT_GUIDANCE,
     do_not_use_when=(

@@ -271,7 +271,7 @@ class ShellRuntime:
 
     @asynccontextmanager
     async def tool_admission(self, effect_kind: str):
-        """Use the resolved registry record, including indirect-call and role projections."""
+        """Retain legacy lease-token bookkeeping without excluding other calls."""
         if effect_kind in READ_EFFECTS:
             yield
             return

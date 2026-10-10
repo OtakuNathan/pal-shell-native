@@ -20,6 +20,7 @@
 #endif
 #include <map>
 #include <mutex>
+#include <set>
 #include <signal.h>
 #include <stdexcept>
 #ifndef _WIN32
@@ -130,7 +131,7 @@ struct Runtime::Impl {
     std::function<void(const Event&)> notifier;
     std::map<id_t, std::shared_ptr<Session>> sessions;
     std::deque<id_t> completed;
-    id_t writer = 0;
+    std::set<id_t> write_leases;
     unsigned completed_capacity;
 
     explicit Impl(unsigned capacity) : completed_capacity(capacity) {
@@ -455,7 +456,6 @@ struct Runtime::Impl {
         s->lifecycle.stop();
         ++s->event_sequence;
         if (!s->lifecycle.watching) s->result_delivered = true;
-        if (writer == s->id) writer = 0;
         bool initial_delivered = s->exposed;
         for (auto* t : std::vector<Timer*>(s->timers)) {
             if (t->kind == TimerKind::wait) {
@@ -474,18 +474,17 @@ struct Runtime::Impl {
         maybe_shutdown();
     }
     void begin(const std::shared_ptr<Session>& s) {
-        if (writer) throw std::runtime_error("write_busy: a shell session or write operation owns this context (writer id "
-                                             + std::to_string(writer) + ")");
-        while (completed.size() >= completed_capacity) {
+        // Every live process reserves a result slot before spawning. Otherwise
+        // concurrent completions could overrun the retained-result capacity.
+        while (sessions.size() >= completed_capacity) {
             auto item = std::find_if(completed.begin(), completed.end(), [this](id_t id) {
                 return sessions.at(id)->result_delivered;
             });
-            if (item == completed.end()) throw std::runtime_error("result_capacity: acknowledge or release completed results");
+            if (item == completed.end()) throw std::runtime_error("result_capacity: wait for running sessions or acknowledge/release completed results");
             sessions.erase(*item); completed.erase(item);
         }
         ff::flow_runner<Blueprint, Receiver> runner(blueprint, s->controller, Receiver{s});
         sessions.emplace(s->id, s);
-        writer = s->id;
         runner(s);
     }
     void maybe_shutdown() {
@@ -672,17 +671,17 @@ void Runtime::cancel_request(id_t request, id_t target) {
 }
 void Runtime::acquire_write(id_t request) {
     impl_->post(request, [=] {
-        if (impl_->writer) throw std::runtime_error("write_busy: shell session or write operation active (writer id "
-                                                    + std::to_string(impl_->writer) + ")");
-        impl_->writer = next_id++;
-        Event event; event.request = request; event.session = impl_->writer; event.status = "write_acquired";
+        // Keep API 2 lease tokens for existing callers without excluding other
+        // tool calls or shell sessions. State changes stay on the reactor.
+        const id_t lease = next_id++;
+        impl_->write_leases.insert(lease);
+        Event event; event.request = request; event.session = lease; event.status = "write_acquired";
         impl_->emit(std::move(event));
     });
 }
 void Runtime::release_write(id_t request, id_t lease) {
     impl_->post(request, [=] {
-        if (impl_->writer != lease || impl_->sessions.count(lease)) throw std::runtime_error("invalid write lease");
-        impl_->writer = 0;
+        if (!impl_->write_leases.erase(lease)) throw std::runtime_error("invalid write lease");
         Event event; event.request = request; event.status = "write_released"; impl_->emit(std::move(event));
     });
 }

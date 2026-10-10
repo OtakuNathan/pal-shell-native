@@ -28,7 +28,7 @@ def native_action(record):
 
 
 class NativeShellOwner:
-    """One process/write owner, shared by immutable registry projections."""
+    """Session and delivery owner, shared by immutable registry projections."""
 
     def __init__(self):
         self._shell = None
@@ -41,7 +41,7 @@ class NativeShellOwner:
         self.defer_delivery = False
         self.require_output_delivery = False
         self.on_ready = None
-        self.write_task = None
+        self.active_calls = 0
         self.remote_port = None
         from .approval import ShellApprovals
         self.approvals = ShellApprovals(self)
@@ -67,18 +67,13 @@ class NativeShellOwner:
                     and (self._shell._foreground or self._shell.execution_work)))
 
     @asynccontextmanager
-    async def write_scope(self):
-        task = asyncio.current_task()
-        previous = self.write_task
-        if previous is not None and previous is not task:
-            raise ShellRejected(
-                f"write_busy: another host write is active (sessions={sorted(self.sessions)}, "
-                f"pending={sorted(self.pending)})")
-        self.write_task = task
+    async def tool_scope(self):
+        """Track in-flight calls for detach without serializing execution."""
+        self.active_calls += 1
         try:
             yield
         finally:
-            self.write_task = previous
+            self.active_calls -= 1
 
     @property
     def shell(self):
@@ -219,7 +214,7 @@ class NativeShellOwner:
             for task in store.values()
         ):
             raise ShellRejected("execution_busy: background observation or acknowledgement is still active")
-        if self.has_work or (self.write_task and not self.write_task.done()):
+        if self.has_work or self.active_calls:
             raise ShellRejected("execution_busy: finish or reconcile native work before detaching")
         if self.events and any(not task.done() for task in self.events.tasks):
             raise ShellRejected("execution_busy: observation delivery is still running")
@@ -304,7 +299,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     " A text-only response while work remains yields until an eligible event. Use tty=true for interactive input.",
                 "failure_next_steps": guidance.failure_next_steps + " Do not replay a live session or poll repeatedly."
                     " Use manage_shell_session for PTY input, termination or a needed fresh snapshot."
-                    " Success requires status=exited and returncode=0. Pending shell output blocks writes and submission.",
+                    " Success requires status=exited and returncode=0. Complete required execution before submission.",
             })
         if canonical == "op_exec_session":
             guidance = SESSION_GUIDANCE
@@ -383,24 +378,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if _is_plugin_lifecycle_tool(record.alias):
             return await super()._call_record_async(*arguments)
         try:
-            if record.execution.effect_kind.value in READ_EFFECTS or (native_action(record) and native_action(record) != "run"):
+            async with self.shell_owner.tool_scope():
                 return await super()._call_record_async(*arguments)
-            target = record.binding.descriptor.metadata.get('native_shell_target', getattr(validated, 'target', 0))
-            if native_action(record) == 'run' and target != 0:
-                return await super()._call_record_async(*arguments)
-            async with self.shell_owner.write_scope():
-                if native_action(record) == "run":
-                    return await super()._call_record_async(*arguments)
-                if self.shell_owner.require_output_delivery and self.shell_owner.completion_blocked_for(0):
-                    raise ShellRejected("write_busy: shell results are not ready yet; continue when their execution result is available")
-                if record.binding.descriptor.metadata.get("delegates_execution"):
-                    # This compound tool invokes run_shell itself. Keep host
-                    # exclusivity, but let the child own its native write lease.
-                    async with self.shell_owner.shell.tool_admission(record.execution.effect_kind.value):
-                        pass
-                    return await super()._call_record_async(*arguments)
-                async with self.shell_owner.shell.tool_admission(record.execution.effect_kind.value):
-                    return await super()._call_record_async(*arguments)
         except RemoteFailure as exc:
             recovery_error = ""
             # Reconcile only the original ticket. A lost reply never authorizes replay.
