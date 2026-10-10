@@ -69,6 +69,7 @@ struct Runtime::Impl {
         bool tty = false, exposed = false, delivered = false, exit_seen = false, settled = false;
         bool flow_done = false, finished = false;
         bool result_delivered = false;
+        bool allow_privilege = false;
         SessionLifecycle lifecycle;
         id_t event_sequence = 0, finished_at = 0;
         int wait_ms = 0, timeout_ms = 0, returncode = 0, signal = 0, inline_limit = 0;
@@ -392,7 +393,8 @@ struct Runtime::Impl {
 #endif
     void spawn(const std::shared_ptr<Session>& s) {
         s->files = std::make_unique<OutputFiles>();
-        Child child = spawn_child(s->shell, s->command, s->cwd, s->tty, s->files->out, s->files->err, s->output_limit != 0);
+        Child child = spawn_child(s->shell, s->command, s->cwd, s->tty, s->files->out, s->files->err,
+                                  s->output_limit != 0, s->allow_privilege);
         s->pid = child.pid;
         try {
             if (child.output >= 0) s->output = poll(s, std::exchange(child.output, -1), false);
@@ -530,6 +532,23 @@ void Runtime::run(id_t request, std::string shell, std::string command, std::str
 }
 void Runtime::run_limited(id_t request, std::string shell, std::string command, std::string cwd,
                          bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit) {
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, output_limit, false);
+}
+void Runtime::run_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+                             bool tty, int wait_ms, int timeout_ms, int inline_limit) {
+    run_limited_authorized(request, std::move(shell), std::move(command), std::move(cwd), tty,
+                           wait_ms, timeout_ms, inline_limit, 0);
+}
+void Runtime::run_limited_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+                                     bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit) {
+    if (tty) throw std::invalid_argument("privilege_pty_unsupported: approved commands cannot open a PTY");
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, output_limit, true);
+}
+void Runtime::launch(id_t request, std::string shell, std::string command, std::string cwd,
+                     bool tty, int wait_ms, int timeout_ms, int inline_limit,
+                     id_t output_limit, bool allow_privilege) {
     if (inline_limit < -1) throw std::invalid_argument("invalid output budget");
     if (wait_ms < 0 || timeout_ms < 0) throw std::invalid_argument("negative timeout");
     for (const auto* value : {&shell, &command, &cwd})
@@ -543,6 +562,7 @@ void Runtime::run_limited(id_t request, std::string shell, std::string command, 
     session->shell = std::move(shell); session->command = std::move(command); session->cwd = std::move(cwd);
     session->inline_limit = inline_limit;
     session->output_limit = output_limit;
+    session->allow_privilege = allow_privilege;
     session->tty = tty; session->wait_ms = wait_ms; session->timeout_ms = timeout_ms;
     impl_->post(request, [owner = impl_.get(), session] { owner->begin(session); });
 }

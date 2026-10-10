@@ -20,8 +20,10 @@ def verify(context):
         if (not callable(getattr(ExecutionRuntime, "prepare_model_context", None))
             or not callable(getattr(MemoryService, "l1_context_view", None))):
             raise RuntimeError("Pal lacks indexed request visibility and observation delivery support")
-        if PROTOCOL_VERSION != 3 or native.API_VERSION != 2 or not hasattr(native.Runtime, 'watch') or not hasattr(rpc, 'channel_request'):
+        if (PROTOCOL_VERSION != 3 or native.API_VERSION != 2
+                or getattr(native, 'PRIVILEGE_GATE_VERSION', 0) != 1
+                or not hasattr(native.Runtime, 'watch') or not hasattr(rpc, 'channel_request')):
             raise RuntimeError('Incompatible native Runtime/RPC client')
     except (ImportError, RuntimeError) as exc:
-        return {'ok': False, 'detail': f'Install pal-shell-native 0.4.x and Pal baseline 9d8cbe906906522e1f4a0d2a50a709385a4209f3 or a compatible later revision (execution extensions, diagnostics, Bunshin verification and enum-field tool discovery) in the host environment: {exc}'}
+        return {'ok': False, 'detail': f'Install a matching pal-shell-native build with privilege admission and Pal baseline 9d8cbe906906522e1f4a0d2a50a709385a4209f3 or a compatible later revision (execution extensions, diagnostics, Bunshin verification and enum-field tool discovery) in the host environment: {exc}'}
     return {'ok': True, 'protocol': PROTOCOL_VERSION}

@@ -6,6 +6,10 @@ from pal.shared.diagnostics import exception_diagnostic, diagnostic_text
 import asyncio
 from dataclasses import dataclass
 import itertools
+import os
+import shlex
+import sys
+import time
 from pathlib import Path
 import tempfile
 import weakref
@@ -137,7 +141,7 @@ class ShellRouter(ShellRuntime):
     async def run(self, cmd, *, target=0, sudo=False, delivery_context=None, **kwargs):
         if target == 0:
             if sudo:
-                raise ShellRejected('sudo_unsupported: explicit privilege approval is remote-only')
+                return await self.local_privileged(cmd, **kwargs)
             return {**await super().run(cmd, **kwargs), 'target': 0}
         if sudo:
             if kwargs.get('tty'):
@@ -154,6 +158,7 @@ class ShellRouter(ShellRuntime):
         try:
             metadata = await self._rpc(ticket, 'metadata', {})
             ticket.epoch = metadata['runtime_epoch']
+            self._require_privilege_gate(metadata)
             args = {k: kwargs[k] for k in ('cwd', 'tty', 'timeout_ms') if kwargs.get(k) is not None}
             args['wait_ms'] = kwargs.get('wait_ms')
             if args['wait_ms'] is None:
@@ -189,6 +194,39 @@ class ShellRouter(ShellRuntime):
             self.remote_foreground.discard(task)
             self.resume()
 
+    @staticmethod
+    def _require_privilege_gate(metadata):
+        if (metadata.get('os', {}).get('family') == 'linux'
+                and metadata.get('privilege_gate_version') != 1):
+            raise RemoteFailure('native_incompatible',
+                'Update this Linux worker to the matching build with the privilege gate before submitting commands')
+
+    async def local_privileged(self, cmd, **kwargs):
+        if not sys.platform.startswith('linux'):
+            raise ShellRejected('sudo_unsupported: local privilege approval currently requires Linux')
+        if kwargs.get('tty'):
+            raise ShellRejected('privilege_pty_unsupported: an approved command cannot open a privileged PTY')
+        if self._closed or self._closing is not None or self.owner.closed:
+            raise ShellRejected('shell runtime is closed')
+        cwd = os.path.abspath(os.path.expanduser(kwargs.get('cwd') or os.getcwd()))
+        args = {'action': 'sudo', 'cmd': cmd, 'cwd': cwd}
+        approval = {'operation_id': uuid4().hex, 'worker_id': 'local host',
+                    'runtime_epoch': self.epoch, 'expires_at': time.time() + 600}
+        task = asyncio.current_task()
+        # Include approval waiting in turn interruption and runtime close.
+        self._foreground[task] = kwargs.get('turn_id', '')
+        try:
+            await self.owner.approvals.request(kwargs.get('turn_id', ''), 0, args, approval)
+            if time.time() >= approval['expires_at']:
+                raise RemoteFailure('approval_expired', 'Approval expired before execution')
+            # Approval is not a sudo password. Do not open an authentication PTY
+            # or capture a password; the OS may still deny noninteractive sudo.
+            command = 'exec ' + shlex.join(['/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', cmd])
+            options = {**kwargs, 'cwd': cwd, 'shell': '/bin/sh', '_authorized': True}
+            return {**await super().run(command, **options), 'target': 0}
+        finally:
+            self._foreground.pop(task, None)
+
     def _capture_context(self, ticket, cmd, tty, context=None):
         core = self.owner.core
         continuation = core.state.active_turns.get(ticket.origin_turn) if core else None
@@ -209,6 +247,7 @@ class ShellRouter(ShellRuntime):
         try:
             metadata = await self._rpc(ticket, 'metadata', {})
             ticket.epoch = metadata['runtime_epoch']
+            self._require_privilege_gate(metadata)
             args = {'action': action, 'target': target}
             if action == 'sudo':
                 args.update(cmd=cmd, cwd=kwargs.get('cwd', ''), wait_ms=kwargs.get('wait_ms') if kwargs.get('wait_ms') is not None else 300000,

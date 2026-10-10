@@ -11,6 +11,34 @@ from pal_shell_native.remote_contract import RemoteFailure
 
 
 class ApprovalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_general_remote_and_local_cards_show_the_exact_script(self):
+        for target in (0, 1):
+            cards = []
+            binding = SimpleNamespace(response_handle=SimpleNamespace(reply_target={'user_id': 'owner'}),
+                endpoint=SimpleNamespace(endpoint_id='tg', channel_kind='telegram'),
+                control_scope_key='scope', correlation_id='correlation')
+            core = SimpleNamespace(state=SimpleNamespace(active_turns={
+                'turn': SimpleNamespace(delivery_binding=binding)}))
+            approvals = ShellApprovals(SimpleNamespace(core=core))
+            async def deliver(delivery, **kwargs):
+                cards.append(delivery.interaction)
+                spec = delivery.interaction
+                if spec.buttons:
+                    approvals.decide(ControlAction('shell_privilege_decision', 'execution', spec.interaction_id,
+                        args={'decision': 'accept'}, route=spec.route, trusted_actor='owner'))
+                return True
+            core._deliver_control_delivery_async = deliver
+            command = 'pacman -S --noconfirm cmake; printf "a && b"'
+            args = {'action': 'sudo', 'cmd': command, 'cwd': '/var/tmp',
+                    'management': {'action': 'shell_command', 'cmd': command, 'cwd': '/var/tmp'}}
+            grant = {'operation_id': 'operation', 'worker_id': 'desktop', 'runtime_epoch': 'epoch',
+                     'expires_at': datetime.now(timezone.utc).timestamp() + 30}
+            await approvals.request('turn', target, args, grant)
+            self.assertIn(command, cards[0].text)
+            self.assertIn('/var/tmp', cards[0].text)
+            self.assertIn('Local sudo' if target == 0 else 'Remote sudo', cards[0].text)
+            self.assertFalse(approvals.pending)
+
     async def test_waiting_request_finishes_on_decision_even_when_card_close_fails(self):
         for choice in ('accept', 'reject', 'invalid', 'cancel'):
             for close_failure in ('error', 'timeout'):

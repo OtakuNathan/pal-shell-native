@@ -46,6 +46,39 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
     async def query(self, oid, client=None):
         return await (client or self.client).request('query', {'operation_id': oid, 'wait_ms': 5000}, timeout_ms=6000)
 
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux management')
+    async def test_general_privilege_requires_worker_and_installed_policy(self):
+        from dataclasses import replace
+        from unittest.mock import patch, AsyncMock
+        args = {'operation_id': uuid4().hex, 'action': 'sudo', 'target': 1,
+                'cmd': 'pacman -S --noconfirm cmake', 'cwd': '/var/tmp', 'wait_ms': 0}
+        self.worker.config = replace(self.worker.config, management_helper='/usr/bin/true',
+                                     management_actions=('apt_update', 'apt_install'))
+        with self.assertRaises(RemoteError) as denied:
+            await self.client.request('prepare_privileged', args)
+        self.assertEqual(denied.exception.code, 'management_unavailable')
+        self.assertNotIn(args['operation_id'], self.worker.operations)
+        self.worker.config = replace(self.worker.config, management_actions=('shell_command',))
+        with self.assertRaises(RemoteError):
+            await self.client.request('prepare_privileged', args)
+        with patch('pal_shell_worker.privilege.management_status',
+                   AsyncMock(return_value={'ok': True, 'allowed_actions': ['shell_command']})):
+            prepared = await self.client.request('prepare_privileged', args)
+            large = {**args, 'operation_id': uuid4().hex, 'cmd': '#' * 32768}
+            with self.assertRaises(RemoteError) as oversized:
+                await self.client.request('prepare_privileged', large)
+            self.assertEqual(oversized.exception.code, 'privilege_command_unsupported')
+            self.assertNotIn(large['operation_id'], self.worker.operations)
+        self.assertEqual(prepared['state'], 'approval_required')
+        self.assertEqual(prepared['normalized_args']['management'],
+            {'action': 'shell_command', 'cmd': args['cmd'], 'cwd': '/var/tmp'})
+        self.assertFalse(self.worker.reservations)
+        with self.assertRaises(RemoteError) as invalid:
+            await self.client.request('commit_privileged', {'operation_id': args['operation_id'],
+                                                          'signature': '00'*64})
+        self.assertEqual(invalid.exception.code, 'approval_invalid')
+        self.assertEqual(self.worker.operations[args['operation_id']].state, 'approval_required')
+
     async def test_session_extension_receipt_is_idempotent_and_watch_is_one_shot(self):
         oid = uuid4().hex
         await self.client.request('submit', {'operation_id': oid, 'cmd': 'sleep 5', 'wait_ms': 0, 'timeout_ms': 2000})
@@ -265,7 +298,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         original = self.worker._native
         gate = self.worker.config.socket_path.parent/'finish-privileged-test'
         async def harmless(method, *args):
-            if method == 'run_limited':
+            if method == 'run_limited_authorized':
                 args = list(args)
                 args[1] = 'while [ ! -f ' + shlex.quote(str(gate)) + ' ]; do sleep .01; done'
             return await original(method, *args)

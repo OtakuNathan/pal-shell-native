@@ -12,6 +12,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #ifdef __APPLE__
 #include <util.h>
 #else
@@ -60,7 +63,8 @@ std::vector<int> inherited_fds() {
 }
 
 Child spawn_child(const std::string& shell, const std::string& command,
-                  const std::string& cwd, bool tty, int stdout_fd, int stderr_fd, bool capture) {
+                  const std::string& cwd, bool tty, int stdout_fd, int stderr_fd,
+                  bool capture, bool allow_privilege) {
     Fds owned;
     int output[2] = {-1, stdout_fd}, exec_error[2];
     int errors[2] = {-1, stderr_fd};
@@ -83,12 +87,19 @@ Child spawn_child(const std::string& shell, const std::string& command,
     const auto close_count = descriptors.size();
     const char* shell_path = shell.c_str();
     const char* directory = cwd.c_str();
-    char* const argv[] = {const_cast<char*>(shell_path), const_cast<char*>("-lc"),
+    // Approved launchers must not execute an account's login startup scripts.
+    char* const argv[] = {const_cast<char*>(shell_path), const_cast<char*>(allow_privilege ? "-c" : "-lc"),
                          const_cast<char*>(command.c_str()), nullptr};
     const int error_output = tty ? output[1] : errors[1];
     pid_t pid = fork();
     if (pid < 0) throw std::system_error(errno, std::generic_category());
     if (pid == 0) {
+#ifdef __linux__
+        // Set this only in the child: the trusted parent must still be able to
+        // launch the independently approved helper. Descendants cannot unset it.
+        if (!allow_privilege && prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
+            fail_child(exec_error[1]);
+#endif
         sigset_t empty; sigemptyset(&empty);
         sigprocmask(SIG_SETMASK, &empty, nullptr);
         for (int signo : {SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGPIPE, SIGALRM, SIGTSTP, SIGTTIN, SIGTTOU})

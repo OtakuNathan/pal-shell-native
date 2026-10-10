@@ -3,6 +3,8 @@ from pathlib import Path
 import itertools
 import os
 import queue
+import shlex
+import sys
 import tempfile
 import time
 import unittest
@@ -41,6 +43,42 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(event['stdout_bytes'], b'hello')
         self.assertEqual(event['stderr_bytes'], b'error')
         self.call('release_output', event['output_id'])
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux privilege gate')
+    def test_ordinary_children_cannot_clear_privilege_gate(self):
+        source = ('import ctypes,pathlib; '
+                  'libc=ctypes.CDLL(None); '
+                  'assert libc.prctl(38,0,0,0,0)==-1; '
+                  'print(next(line for line in pathlib.Path("/proc/self/status").read_text().splitlines() '
+                  'if line.startswith("NoNewPrivs:")))')
+        command = shlex.join([sys.executable, '-c', source])
+        for method, tty in [('run', False), ('run', True), ('run_limited', False)]:
+            with self.subTest(method=method, tty=tty):
+                args = ['/bin/sh', command, '', tty, 5000, 0, 4096]
+                if method == 'run_limited': args.append(65536)
+                event = self.call(method, *args)
+                self.assertEqual(event['returncode'], 0, event)
+                self.assertEqual(event['stdout_bytes'].strip(), b'NoNewPrivs:\t1')
+                self.call('release_output', event['output_id'])
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux privilege gate')
+    def test_authorized_launcher_does_not_change_parent_or_later_requests(self):
+        parent_flag = next(line for line in Path('/proc/self/status').read_text().splitlines()
+                           if line.startswith('NoNewPrivs:')).split()[-1]
+        command = 'awk \'/^NoNewPrivs:/ {print $2}\' /proc/self/status'
+        for method in ('run_authorized', 'run_limited_authorized'):
+            args = ['/bin/sh', command, '', False, 5000, 0, 4096]
+            if method == 'run_limited_authorized': args.append(65536)
+            event = self.call(method, *args)
+            self.assertEqual(event['stdout_bytes'].strip().decode(), parent_flag)
+            self.call('release_output', event['output_id'])
+        event = self.run_shell(command)
+        self.assertEqual(event['stdout_bytes'].strip(), b'1')
+        self.call('release_output', event['output_id'])
+
+    def test_authorized_launcher_rejects_pty(self):
+        with self.assertRaisesRegex(RuntimeError, 'privilege_pty_unsupported'):
+            self.runtime.run_authorized(next(self.ids), '/bin/sh', 'id', '', True, 5000, 0, 4096)
 
     def test_budget_spills_complete_output_and_releases_files(self):
         event = self.run_shell('printf 123456789', budget=4)

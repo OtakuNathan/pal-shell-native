@@ -19,7 +19,7 @@ def main(executable):
             process=subprocess.Popen([str(Path(executable).resolve()),'--config',str(config),'--setup-sudo'],
                                      stdin=slave,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             os.close(slave); slave=None
-            os.write(master,('1\n\n\n\n'+str(output)+'\n').encode())
+            os.write(master,('1\n\n\n\n\n'+str(output)+'\n').encode())
             log,_=process.communicate(timeout=60)
             assert process.returncode==0,log.decode()
             setup=next(output.glob('setup-*'))

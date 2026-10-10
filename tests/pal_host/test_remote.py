@@ -80,6 +80,27 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, tool_name, **args):
         return await self.runtime.execute_tool_async(new_tool_call(name=tool_name, args=args), turn_id='origin')
 
+    async def test_old_linux_worker_cannot_receive_new_shell_submissions(self):
+        from unittest.mock import patch
+        original = self.worker.handle
+        requests = []
+        async def old_worker(method, args):
+            requests.append(method)
+            result = await original(method, args)
+            if method == 'metadata':
+                result['os'] = {**result['os'], 'family': 'linux'}
+                result.pop('privilege_gate_version', None)
+            return result
+        with patch.object(self.worker, 'handle', old_worker):
+            for sudo in (False, True):
+                with self.subTest(sudo=sudo), self.assertRaises(RemoteFailure) as caught:
+                    await self.owner.shell.run('id', target=1, sudo=sudo, turn_id='origin')
+                self.assertEqual(caught.exception.code, 'native_incompatible')
+                self.assertEqual(caught.exception.effect, 'not_started')
+        self.assertNotIn('submit', requests)
+        self.assertNotIn('prepare_privileged', requests)
+        self.assertFalse(self.owner.shell.operations)
+
     async def test_remote_command_failures_retain_cause_effect_and_model_recovery(self):
         result = await self.tool('run_shell', target=1, cmd='printf remote-cause >&2; exit 7')
         self.assertEqual(result.structured['returncode'], 7)

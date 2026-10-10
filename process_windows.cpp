@@ -31,7 +31,7 @@ struct Handle {
 };
 }
 Child spawn_child(const std::string& shell, const std::string& command, const std::string& cwd,
-                  bool tty, int stdout_fd, int, bool) {
+                  bool tty, int stdout_fd, int, bool, bool) {
     if (tty) throw std::runtime_error("pty_unsupported: Windows prototype has no ConPTY");
     // Keep the approved script beside this session's private output, not in argv.
     wchar_t output[32768];

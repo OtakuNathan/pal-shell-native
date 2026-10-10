@@ -16,11 +16,11 @@ import time
 import tomllib
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from .management import normalize, literal_package_selector
+from .management import normalize, literal_package_selector, MAX_ENVELOPE_BYTES
 from .protocol import canonical, digest, encode, decode
 
 CONFIG = Path('/usr/local/etc/pal-shell-management.toml')
-MAX_INPUT = 65536
+MAX_INPUT = MAX_ENVELOPE_BYTES
 
 
 def protected(path, *, directory=False):
@@ -90,6 +90,8 @@ def save(path, record):
 
 
 def command(action):
+    if action['action'] == 'shell_command':
+        return ['/bin/sh', '-c', action['cmd']]
     if action['action'] == 'apt_update':
         return ['/usr/bin/apt-get','update']
     if action['action'] == 'apt_install':
@@ -100,7 +102,7 @@ def command(action):
     raise ValueError('Unsupported action')
 
 
-def run_child(argv, timeout_ms):
+def run_child(argv, timeout_ms, *, cwd='/'):
     stopping = False
     def stop(*_):
         nonlocal stopping
@@ -109,7 +111,7 @@ def run_child(argv, timeout_ms):
     parent = os.getppid()
     process = None
     try:
-        process = subprocess.Popen(argv,stdin=subprocess.DEVNULL,cwd='/',start_new_session=True,
+        process = subprocess.Popen(argv,stdin=subprocess.DEVNULL,cwd=cwd,start_new_session=True,
             env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','USER':'root','LOGNAME':'root',
                  'LANG':'C.UTF-8','DEBIAN_FRONTEND':'noninteractive'})
         started = time.monotonic(); stopping_at = None
@@ -158,7 +160,7 @@ def execute(config, envelope):
         save(path,{**record,'state':'not_started','returncode':126})
         raise
     # Once process creation is attempted, a crash leaves pending/UNKNOWN.
-    code = run_child(command(action), envelope['args'].get('timeout_ms'))
+    code = run_child(command(action), envelope['args'].get('timeout_ms'), cwd=action.get('cwd', '/'))
     save(path,{**record,'state':'complete','returncode':code})
     return code if code>=0 else 128-code
 

@@ -18,7 +18,7 @@ from .guidance import REMOTE_RUN_GUIDANCE, RESIDENT_SESSION_GUIDANCE
 
 class NativeRunInput(RunInput):
     target: int = Field(default=0, ge=0, strict=True, description="Execution target; 0 is local. Discover configured remote target IDs with list_remote when needed; reuse a known target. Paths belong to this target.")
-    sudo: bool = Field(default=False, description="Remote targets only; requires tty=false and approval for a supported management command.")
+    sudo: bool = Field(default=False, description="Request one privileged command with human approval; requires tty=false. Put the command itself in cmd, without a sudo prefix. Local Linux uses noninteractive system sudo; remote Linux requires the action enabled in its signed helper policy.")
 
 
 class RemoteStartInput(StrictToolModel):
@@ -32,7 +32,7 @@ class RemotePowerInput(StrictToolModel):
 
 
 class TargetRunInput(RunInput):
-    sudo: bool = Field(default=False, description="Remote targets only; requires tty=false and approval for a supported management command.")
+    sudo: bool = Field(default=False, description="Request one privileged command with human approval; requires tty=false. Put the command itself in cmd, without a sudo prefix. Remote Linux requires the action enabled in its signed helper policy.")
 
 
 class ListRemoteInput(StrictToolModel):

@@ -73,7 +73,7 @@ async def execute_privileged(worker, op):
             'PAL_SHELL_APPROVAL=' + grant,
             '/usr/bin/sudo', '-A', '-k', '--', worker.config.privilege_helper,
             worker.config.shell, args['cmd']])
-        result = await worker._native('run_limited', worker.config.shell, command, args.get('cwd', ''),
+        result = await worker._native('run_limited_authorized', worker.config.shell, command, args.get('cwd', ''),
             False, args.get('wait_ms', 300000), args.get('timeout_ms') or 0, 0, worker.config.output_limit)
         worker.native_owners[result['output_id']] = op.operation_id
         snapshot = worker._snapshot(result)
@@ -124,6 +124,13 @@ async def handle_privileged(worker, method, args):
         if fresh:
             op.state = 'approval_required'
             op.nonce, op.expires_at = secrets.token_hex(32), time.time() + 600
+            if sys.platform.startswith('linux'):
+                from .management import MAX_ENVELOPE_BYTES
+                envelope = {'approval': approval_payload(worker, op), 'args': params, 'signature': '0' * 128}
+                if len(base64.b64encode(canonical(envelope))) > MAX_ENVELOPE_BYTES:
+                    worker.operations.pop(op.operation_id, None)
+                    raise RemoteError('privilege_command_unsupported',
+                        'Approved command envelope exceeds 64 KiB; shorten the script or working directory')
         return {**op.snapshot(), 'approval': approval_payload(worker, op), 'normalized_args': params}
     op = worker.operations.get(text(args.get('operation_id'), 'operation_id', limit=128))
     if op is None or op.method != 'privileged':
@@ -178,7 +185,8 @@ async def execute_management(worker, op):
     envelope = {'approval': approval_payload(worker, op), 'args': op.args, 'signature': op.approval_signature}
     payload = base64.b64encode(canonical(envelope)).decode()
     # The envelope is public authorization data, not a password. Only the fixed
-    # helper gets NOPASSWD; no model command is interpolated into a root shell.
+    # helper gets NOPASSWD; it verifies the signature/policy before executing
+    # either the fixed APT operation or the exact approved root command.
     command = 'printf %s ' + shlex.quote(payload) + ' | ' + shlex.join([
         '/usr/bin/sudo', '-n', '--', worker.config.management_helper])
     if op.args['action'] == 'shutdown':
@@ -194,7 +202,7 @@ async def execute_management(worker, op):
             raise RemoteError('shutdown_unconfirmed', 'Management helper did not confirm shutdown; query the original operation', effect='unknown')
         worker._finish(op, {'status':'accepted','operation_id':op.operation_id,'runtime_epoch':worker.epoch,'power_state':'unconfirmed'})
         return
-    result = await worker._native('run_limited', worker.config.shell, command, '', False,
+    result = await worker._native('run_limited_authorized', '/bin/sh', command, '', False,
         op.args.get('wait_ms',300000),op.args.get('timeout_ms') or 0,0,worker.config.output_limit)
     worker.native_owners[result['output_id']] = op.operation_id
     snapshot = worker._snapshot(result)

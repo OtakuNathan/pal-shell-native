@@ -174,11 +174,16 @@ callers retain their behavior; `run_limited` is an additional bounded-output ent
 ## Remote sudo setup
 
 Run `pal-shell-worker --config /absolute/worker.toml --setup-sudo` in the
-ordinary remote worker user's own terminal. On Linux 0.3 it prepares signed
-management without passwords or Secret Service. Allowed forms are `apt update`
+ordinary remote worker user's own terminal. On Linux it prepares signed
+management without passwords or Secret Service. The default allowed forms are `apt update`
 and `apt install PACKAGE...` (also `apt-get`), approved individually through Pal's
 existing `run_shell(sudo=True)` path. No flags, local packages, repository changes,
-upgrades/removal or arbitrary root commands. Shutdown is separately opt-in and
+upgrades/removal or arbitrary root commands under the default policy. The wizard
+also offers an explicit `YES` opt-in for `shell_command`, which permits any exact
+approved root script and absolute working directory, including CachyOS/Arch
+commands such as `run_shell(target=1, sudo=True, cmd="pacman -S --noconfirm cmake")`.
+Enable it in both the installed root policy and worker configuration; old policies
+keep their APT-only permissions. Shutdown is separately opt-in and
 still requires approval; cloud/Windows/Mac power must remain disabled.
 
 The wizard generates a fixed no-argument sudoers helper, root policy, worker
@@ -218,7 +223,24 @@ shell, apt directly, or the old arbitrary-command helper.
 
 macOS retains Keychain, protected askpass and its explicit STORE prompt. Windows
 remains unsupported for sudo/power. The wizard neither activates services nor
-claims E2E. Verify approved `apt update` on Linux (approved `id` on Mac) separately.
+claims E2E. Verify approved `id` when general Linux commands are enabled, or
+`apt update` under the default APT policy (approved `id` on Mac), separately.
+
+Local Linux also supports `run_shell(target=0, sudo=True, cmd="id")`, using the
+same authenticated Approve once / Reject interaction. Commands must use
+`tty=false` and omit the sudo prefix. Local execution uses system `sudo -n`;
+approval does not supply an OS password or override sudoers. If OS authorization
+is unavailable, the command reports the sudo failure without a password prompt.
+
+Ordinary local and remote Linux children set `no_new_privs` before shell startup.
+Nested scripts, pipelines, absolute sudo paths and PTY input therefore cannot gain
+privilege via setuid/setgid executables or file capabilities. A literal `sudo`
+inside `cmd` does not infer privileged mode: use `sudo=True` explicitly. No
+permission failure triggers an automatic privileged retry. This is an elevation
+guard, not a sandbox: it does not remove an account's existing privileges or block
+access to privileged IPC services. The host/worker must run as an ordinary account.
+The plugin/worker reject an older Linux native binary without the privilege gate;
+install matching binaries before activation. Approved launchers skip login scripts.
 
 ## Multiplexed transport and upgrades
 
