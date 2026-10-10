@@ -31,7 +31,7 @@ must not share ownership. Private keys never appear in tool parameters or result
 ## Tool contract
 
 - `run_shell(cmd, target=0, ...)`: existing shell arguments, plus execution location.
-  `sudo=True` requests one approved privileged operation on a remote target; privileged
+  `sudo=True` requests one approved privileged operation locally on Linux or on a remote target; privileged
   PTYs are rejected. Ordinary remote PTYs remain supported.
 - `manage_shell_session(session_id, ...)`: positive public ID already binds target and
   Runtime epoch; no target override. Controls use separate operation IDs.
@@ -312,15 +312,16 @@ user/account/session identity. Providers without this evidence cannot approve.
 External Telegram/other provider packages are not modified by this change.
 Bunshin scopes do not inherit the resident remote port or its identities.
 
-The user worker is not elevated. Linux 0.3 uses signed, fixed management
-operations, without a stored sudo password or Secret Service session:
+The user worker is not elevated. Linux uses signed management operations,
+without a stored sudo password or Secret Service session. Its default policy retains
+the fixed APT operations:
 
 - `run_shell(target=1, sudo=True, cmd="apt update")`
 - `run_shell(target=1, sudo=True, cmd="apt install cmake ninja-build")`
 
 `apt-get` is also accepted. Extra options, paths, package versions, repository
-changes, upgrades/removal, shell operators and arbitrary root commands are rejected
-before approval. The worker normalizes action/package names; Pal displays those
+changes, upgrades/removal, shell operators and arbitrary root commands require the
+separately enabled `shell_command` policy. The worker normalizes action/package names; Pal displays those
 same values for approval and signs the bound fingerprint. Installation uses fixed
 `apt-get --assume-yes --no-remove install -- ...` argv, sanitized environment,
 noninteractive stdin and process-group supervision. Distribution packages and their
@@ -330,6 +331,32 @@ Package names are literal: the protected helper escapes and anchors each operand
 before passing it to apt-get. A name such as `bash.` cannot expand to other packages;
 trailing `+`/`-` cannot become install/remove operators. Legitimate names such as
 `g++` and `python3.11` retain their spelling in the approval.
+
+An administrator can opt into `shell_command` through `--setup-sudo`, by typing
+`YES` at the general root command prompt. It must be enabled in both
+`management_actions` and the protected helper's `allowed_actions`. This allows
+`run_shell(target=1, sudo=True, cmd="pacman -S --noconfirm cmake")`, shell operators
+and scripts. Pal displays the full script and absolute cwd, and the signature binds
+both values. The protected helper independently verifies and journals the grant,
+then runs `/bin/sh -c` with sanitized root environment and noninteractive stdin.
+Its existing process-group cleanup and timeout supervision still apply. Fixed APT
+forms without cwd retain their normalization and literal-package protections.
+
+Local Linux `sudo=True` uses the same authenticated approval interaction followed
+by `sudo -n -- /bin/sh -c`, with the exact approved script and directory. OS sudo
+authentication/sudoers are independent of Pal approval; an unavailable OS grant
+returns a command failure without prompting for a password. Local macOS privilege
+approval is currently unsupported. Every privileged call rejects `tty=true`.
+
+Ordinary Linux child processes set `no_new_privs` before shell startup, inherited
+through nested shells, scripts and PTY commands. A textual sudo command with
+`sudo=False` cannot use setuid sudo even when a sudo timestamp is cached; it does
+not automatically open an approval. Use the explicit privilege flag. Failed
+commands never escalate automatically. This guard does not revoke existing host
+privilege or restrict privileged IPC and is not a complete sandbox. Run the host
+and worker as ordinary users. Matching Linux native binaries with the privilege
+gate are required; older binaries fail compatibility checks. Approved launchers
+skip login scripts.
 
 The only NOPASSWD entry is a root-owned no-argument `/usr/local/libexec/pal-shell-manage`
 launcher, pointing at a fully protected matching worker bundle. Never grant
@@ -350,7 +377,7 @@ Run installation setup as the ordinary worker account in the user's own terminal
 pal-shell-worker --config /absolute/worker.toml --setup-sudo
 ```
 
-Linux asks for target number, optional shutdown (disabled by default), protected
+Linux asks for target number, optional shutdown and general commands (both disabled by default), protected
 bundle path and output directory. It generates root policy, a fixed launcher,
 sudoers, worker fragments and `NEXT_STEPS.txt`; no password is requested.
 The final message prints the actual remote absolute path and quoted `cat` command.
@@ -358,7 +385,8 @@ An administrator reviews and installs these files and runs `visudo -c`. Preserve
 identity/configuration and coordinate active sessions before activation. The wizard
 does not install root files, change services or claim sudo E2E passed. `list_remote`
 separates configured support from a timestamped helper/sudoers installation probe.
-Verify an actual approved `apt update` separately.
+Verify an actual approved `id` if general commands are enabled, or `apt update`
+under the default policy, separately.
 
 macOS retains remote Keychain and protected askpass/privilege helpers. Its wizard
 uses explicit `STORE` consent and the OS hidden prompt. Secrets never enter Pal

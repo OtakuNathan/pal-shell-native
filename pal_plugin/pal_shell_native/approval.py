@@ -38,9 +38,9 @@ class ShellApprovals:
             raise RemoteFailure('approval_unavailable', 'Channel does not provide a verified human identity')
         route = ControlRoute(binding.endpoint.endpoint_id, binding.endpoint.channel_kind, reply,
                              binding.control_scope_key, binding.correlation_id)
-        request = ExecutionApprovalRequest(title=f"Remote {args['action']} on target {target}", risk='high',
+        request = ExecutionApprovalRequest(title=f"{'Local' if target == 0 else 'Remote'} {args['action']} on target {target}", risk='high',
             impact=f"Execute exactly this {args['action']} request once on {approval['worker_id']}.",
-            approval_kind='remote_privilege', metadata={'target': target, 'operation_id': approval['operation_id']})
+            approval_kind='local_privilege' if target == 0 else 'remote_privilege', metadata={'target': target, 'operation_id': approval['operation_id']})
         identifier = uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self.pending[identifier] = PendingApproval(route, actor, future, approval['expires_at'])
@@ -48,9 +48,10 @@ class ShellApprovals:
             return InteractionButtonSpec(label, 'control.action.dispatch', {'action_kind': 'shell_privilege_decision',
                 'target_scope': 'execution', 'target_id': identifier, 'args': {'decision': decision}})
         management = args.get('management')
-        approved_command = (str(management['action']) + ' ' + ' '.join(management.get('packages', []))) if management else args.get('cmd', 'shutdown')
+        approved_command = (str(management['action']) + ' ' + ' '.join(management.get('packages', []))) if management and management['action'] != 'shell_command' else args.get('cmd', 'shutdown')
+        directory = management.get('cwd') if management and management['action'] == 'shell_command' else args.get('cwd')
         text = (f"{request.title}\n{request.impact}\nRuntime: {approval['runtime_epoch']}\n"
-                f"Directory: {args.get('cwd') or '(worker default)'}\n\n{approved_command}\n\n"
+                f"Directory: {directory or '(worker default)'}\n\n{approved_command}\n\n"
                 "Approval applies to this request only. Execution results are reported separately.")
         interaction = InteractionMessageSpec(identifier, 'approval_request', route, text,
             ((button('Approve once', 'accept'), button('Reject', 'reject')),),

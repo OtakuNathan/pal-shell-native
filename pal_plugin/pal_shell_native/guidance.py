@@ -94,8 +94,12 @@ REMOTE_RUN_GUIDANCE = RUN_GUIDANCE.model_copy(update={
         "offer to enroll it after obtaining the user's consent; use search_skills/inject_skill for pal.remote.setup. "
         "SSH success alone is neither remote enrollment nor permission to install a worker or edit target configuration. "
     ) + RUN_GUIDANCE.use_when + (
-        " On Linux remote targets, sudo=true supports only apt/apt-get update or apt/apt-get install PACKAGE... "
-        "without extra flags or shell operators; requires tty=false, remote target>0, and approval for each command. Inspect list_remote for configured management support."
+        " Use sudo=true and tty=false for one privileged command, with cmd containing the command itself without a sudo prefix. "
+        "Every privileged command requires approval from the originating authenticated user. Local Linux uses noninteractive system sudo, "
+        "which may still deny access when OS authentication is unavailable. Remote Linux supports fixed APT actions by default; "
+        "general commands (including pacman) require shell_command enabled in both the worker and protected helper policy. "
+        "Ordinary Linux execution blocks setuid/file-capability elevation, including sudo inside scripts or PTYs; it never retries with privilege. "
+        "Inspect list_remote for configured management support."
     ),
     "do_not_use_when": RUN_GUIDANCE.do_not_use_when + (
         " Local file tools do not access remote paths. Use the selected target shell for remote files "

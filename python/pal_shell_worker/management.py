@@ -3,6 +3,8 @@ import re
 import shlex
 from .protocol import RemoteError
 
+MAX_ENVELOPE_BYTES = 65536
+
 
 def literal_package_selector(name):
     # apt-get otherwise falls back to an unanchored regex for names such as
@@ -32,6 +34,18 @@ def parse_apt(command):
 def normalize(args):
     if args['action'] == 'shutdown':
         return {'action': 'shutdown', 'packages': []}
-    if args['action'] != 'sudo' or args.get('cwd') or args.get('tty'):
-        raise RemoteError('privilege_command_unsupported', 'Linux management does not accept cwd, PTY, or arbitrary root commands')
-    return parse_apt(args['cmd'])
+    if args['action'] != 'sudo' or args.get('tty'):
+        raise RemoteError('privilege_command_unsupported', 'Privileged commands do not accept PTY sessions')
+    from .protocol import text
+    command = text(args.get('cmd'), 'cmd', limit=32768)
+    cwd = text(args.get('cwd', ''), 'cwd', empty=True)
+    if cwd and not cwd.startswith('/'):
+        raise RemoteError('privilege_command_unsupported', 'Privileged cwd must be absolute')
+    if not cwd:
+        try:
+            return parse_apt(command)
+        except RemoteError:
+            pass
+    # The protected helper independently checks that this broader action was
+    # enabled by the administrator, and that these exact values were signed.
+    return {'action': 'shell_command', 'cmd': command, 'cwd': cwd or '/'}

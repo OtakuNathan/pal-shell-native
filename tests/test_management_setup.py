@@ -14,6 +14,27 @@ from pal_shell_worker import management_setup
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux setup')
 class SetupTests(unittest.TestCase):
+    def test_general_commands_opt_in_updates_both_policies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)/'bundle'
+            (bundle/'_internal').mkdir(parents=True)
+            (bundle/'pal-shell-worker').write_text('fixture')
+            config = SimpleNamespace(worker_id='desktop', client_id='pal', client_public_key='a'*64,
+                                     socket_path=Path('/home/test/worker.sock'), protected_machine_ids=())
+            with patch('os.getuid', return_value=1000), patch('os.geteuid', return_value=1000), \
+                 patch('pwd.getpwuid', return_value=SimpleNamespace(pw_name='test')), \
+                 patch('sys.stdin.isatty', return_value=True), patch('sys.stdout', io.StringIO()), \
+                 patch('builtins.input', side_effect=['1', '', 'YES', str(bundle), '', directory]):
+                self.assertEqual(management_setup.main(config), 0)
+            path = next(Path(directory).glob('setup-*/NEXT_STEPS.txt'))
+            policy = tomllib.loads((path.parent/'management.toml').read_text())
+            worker = tomllib.loads((path.parent/'worker-sudo.toml').read_text())
+            self.assertEqual(policy['allowed_actions'], ['apt_update', 'apt_install', 'shell_command'])
+            self.assertEqual(worker['management_actions'], policy['allowed_actions'])
+            self.assertEqual(worker['shutdown_policy'], 'disabled')
+            self.assertIn('cmd="id"', path.read_text())
+            self.assertIn('entire exact script and cwd require approval', path.read_text())
+
     def test_shutdown_opt_in_updates_both_policies_without_activating(self):
         with tempfile.TemporaryDirectory() as directory:
             bundle = Path(directory)/'bundle'
@@ -24,7 +45,7 @@ class SetupTests(unittest.TestCase):
             with patch('os.getuid', return_value=1000), patch('os.geteuid', return_value=1000), \
                  patch('pwd.getpwuid', return_value=SimpleNamespace(pw_name='test')), \
                  patch('sys.stdin.isatty', return_value=True), patch('sys.stdout', io.StringIO()), \
-                 patch('builtins.input', side_effect=['1', 'YES', str(bundle), '', directory]):
+                 patch('builtins.input', side_effect=['1', 'YES', '', str(bundle), '', directory]):
                 self.assertEqual(management_setup.main(config), 0)
             path = next(Path(directory).glob('setup-*/NEXT_STEPS.txt'))
             policy = tomllib.loads((path.parent/'management.toml').read_text())
@@ -47,7 +68,7 @@ class SetupTests(unittest.TestCase):
             with patch('os.getuid', return_value=1000), patch('os.geteuid', return_value=1000), \
                  patch('pwd.getpwuid', return_value=SimpleNamespace(pw_name='test')), \
                  patch('sys.stdin.isatty', return_value=True), patch('sys.stdout', output), \
-                 patch('builtins.input', side_effect=['1', '', str(bundle), '', directory]) as prompt:
+                 patch('builtins.input', side_effect=['1', '', '', str(bundle), '', directory]) as prompt:
                 self.assertEqual(management_setup.main(config), 0)
             path = next(Path(directory).glob('setup-*/NEXT_STEPS.txt'))
             self.assertIn(str(path), output.getvalue())
@@ -56,7 +77,7 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(policy['allowed_actions'], ['apt_update', 'apt_install'])
             self.assertIn('NOPASSWD: /usr/local/libexec/pal-shell-manage ""',
                           (path.parent/'pal-shell-management.sudoers').read_text())
-            self.assertEqual(prompt.call_count, 5)
+            self.assertEqual(prompt.call_count, 6)
             self.assertIn('visudo -c', path.read_text())
             self.assertNotIn('secret-service', path.read_text())
             self.assertIn('sudo /usr/bin/python3 -I', output.getvalue())
@@ -79,7 +100,7 @@ class SetupTests(unittest.TestCase):
             output=bundle/'setup'
             with patch('os.getuid',return_value=1000), patch('os.geteuid',return_value=1000), \
                  patch('sys.stdin.isatty',return_value=True), patch('sys.stderr',io.StringIO()), \
-                 patch('builtins.input',side_effect=['1','',str(bundle),'',str(output)]):
+                 patch('builtins.input',side_effect=['1','','',str(bundle),'',str(output)]):
                 self.assertEqual(management_setup.main(None),1)
             self.assertFalse(output.exists())
 

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shlex
 import subprocess
 import sys
 from uuid import uuid4
@@ -34,14 +35,14 @@ async def main():
         return '\n'.join(k+' = '+json.dumps(v) for k,v in data.items())+'\n'
     policy = Path('/usr/local/etc/pal-shell-management.toml')
     policy.write_text(toml({**common,'worker_uid':user.pw_uid,'target':1,'worker_socket':str(sock),
-                           'allowed_actions':['apt_update','apt_install'],'state_directory':str(state)}))
+                           'allowed_actions':['apt_update','apt_install','shell_command'],'state_directory':str(state)}))
     sudoers = Path('/etc/sudoers.d/pal-shell-management')
     sudoers.write_text('paltest ALL=(root) NOPASSWD: /usr/local/libexec/pal-shell-manage ""\n')
     sudoers.chmod(0o440)
     subprocess.run(['/usr/sbin/visudo','-c'],check=True)
     config = Path('/home/paltest/worker.toml')
     config.write_text(toml({**common,'socket_path':str(sock),'management_helper':str(helper),
-                            'management_actions':['apt_update','apt_install'],'shutdown_policy':'disabled'}))
+                            'management_actions':['apt_update','apt_install','shell_command'],'shutdown_policy':'disabled'}))
     # Exercise the generated installer with a complete test bundle. Its executable
     # delegates to the container's root-owned Python installation; no host files
     # or credentials are used. The real bundled binary is covered by bundle CI.
@@ -54,7 +55,7 @@ from pathlib import Path
 from unittest.mock import patch
 from pal_shell_worker.__main__ import load_config
 from pal_shell_worker.management_setup import main
-answers = ['1', '', '/home/paltest/fixture-bundle',
+answers = ['1', '', 'YES', '/home/paltest/fixture-bundle',
            '/usr/local/libexec/pal-shell-worker-fixture/pal-shell-worker', '/home/paltest/setup']
 with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_effect=answers):
     assert main(load_config('/home/paltest/worker.toml')) == 0
@@ -64,7 +65,7 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
     for _ in range(2):
         subprocess.run([sys.executable,'-I',str(setup/'install-root.py')],check=True)
     assert config.read_text() == toml({**common,'socket_path':str(sock),'management_helper':str(helper),
-                                     'management_actions':['apt_update','apt_install'],'shutdown_policy':'disabled'})
+                                     'management_actions':['apt_update','apt_install','shell_command'],'shutdown_policy':'disabled'})
     assert len(list((state/'install-backups').iterdir())) == 2
     # No repository network access or package mutation is needed for acceptance:
     # update an empty source set, then install the already-installed bash package.
@@ -83,14 +84,32 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
         assert info['privilege']['installation']['ok'], info
         assert not info['power']['shutdown'], info
         prefix = ['/usr/sbin/runuser','-u','paltest','--','/usr/bin/sudo','-n','--',str(helper)]
+        status_payload = base64.b64encode(canonical({'mode': 'status'}))
+        probe = await asyncio.to_thread(subprocess.run, prefix, input=status_payload, capture_output=True)
+        assert probe.returncode == 0, probe.stderr  # This fixed sudoers entry is usable.
+        ordinary = uuid4().hex
+        command = 'printf %s ' + shlex.quote(status_payload.decode()) + ' | ' + shlex.join(prefix[4:])
+        await client.request('submit', {'operation_id': ordinary, 'cmd': command, 'wait_ms': 300000})
+        blocked = (await client.request('query', {'operation_id': ordinary, 'wait_ms': 300000}))['result']
+        assert blocked['returncode'] != 0, 'Ordinary shell used NOPASSWD sudo without approval'
+        await client.request('release', {'output_id': blocked['output_id']})
         for args, payload in [(['extra'],b''), ([],base64.b64encode(b'{"args":{}}'))]:
             result = await asyncio.to_thread(subprocess.run,prefix+args,input=payload,capture_output=True)
             assert result.returncode != 0, 'Unauthenticated/argument-bearing root invocation accepted'
-        for command, wait in [('apt update', 0), ('apt install bash', 1), ('apt update', 300000)]:
+        marker = Path('/var/tmp/pal-approved-command')
+        general = '/usr/bin/id -u > ' + shlex.quote(str(marker))
+        for command, wait in [('apt update', 0), ('apt install bash', 1), ('apt update', 300000), (general, 0)]:
             oid = uuid4().hex
             prepared = await client.request('prepare_privileged',{'operation_id':oid,'target':1,
                 'action':'sudo','cmd':command,'wait_ms':wait})
             signature = key.sign(canonical(prepared['approval'])).hex()
+            if command == general:
+                assert not marker.exists(), 'Root command ran before approval was committed'
+                bad = await asyncio.to_thread(subprocess.run, prefix,
+                    input=base64.b64encode(canonical({'approval': prepared['approval'],
+                        'args': {**prepared['normalized_args'], 'cmd': 'touch /var/tmp/tampered'},
+                        'signature': signature})), capture_output=True)
+                assert bad.returncode != 0, 'Root verifier accepted an altered approved script'
             await client.request('commit_privileged',{'operation_id':oid,'signature':signature})
             result = await client.request('query',{'operation_id':oid,'wait_ms':300000},timeout_ms=310000)
             execution = result['result']
@@ -101,6 +120,9 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
                         'session_id':execution['session_id'],'wait_ms':5000})
                     execution = (await client.request('query', {'operation_id':read,'wait_ms':5000}))['result']
             assert execution['returncode'] == 0, execution
+            if command == general:
+                assert marker.read_text().strip() == '0', 'Approved general command did not run as root'
+                assert not Path('/var/tmp/tampered').exists()
             reconciled = await client.request('query', {'operation_id':oid})
             assert reconciled['management_journal']['state'] == 'complete', reconciled
             # Root verifier sees a genuine, already-consumed signed grant again.
@@ -110,7 +132,7 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
             assert replay.returncode == 0, replay.stderr
             assert before == {p.name:p.read_bytes() for p in state.glob('*.json')}
             await client.request('release',{'output_id':execution['output_id']})
-        print('Real sudoers denial, signed apt update/install, durable replay and worker query passed')
+        print('Real sudoers denial, ordinary elevation guard, signed APT/general root commands, durable replay and worker query passed')
     finally:
         if client: await client.close()
         if process.returncode is None: process.terminate()

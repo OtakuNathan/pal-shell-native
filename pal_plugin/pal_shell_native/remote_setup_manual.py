@@ -150,16 +150,21 @@ Unprobed is not unsupported, and offline does not make a configured target vanis
 Shell readiness does not prove GUI/Automation permission or a logged-in desktop.
 Sudo setup is optional and separate. Matching protocol-3 worker and native/palpkg use
 protocol 2. Linux uses signed sudoers management without a stored password or
-unlocked Secret Service dependency. Only apt/apt-get update and apt/apt-get install
+unlocked Secret Service dependency. By default only apt/apt-get update and apt/apt-get install
 PACKAGE... are accepted through run_shell(sudo=True), without extra flags, package
 files or root shell scripts. Each operation requires trusted approval of normalized
-action/packages. Shutdown remains shutdown_remote_target, enabled only for a configured
+action/packages. To support CachyOS/Arch or other root commands, the owner can type
+YES at the general root command prompt in --setup-sudo. This enables shell_command
+in BOTH the worker fragment and protected root policy. Pal then displays and signs
+the exact full script and absolute cwd. Use sudo=True, tty=False and cmd without a
+sudo prefix; for example cmd="pacman -S --noconfirm cmake". Existing policies remain
+APT-only until explicitly changed. Shutdown remains shutdown_remote_target, enabled only for a configured
 Ubuntu desktop; cloud, Windows and Mac power remain disabled.
 
 The machine owner runs
 `pal-shell-worker --config /absolute/worker.toml --setup-sudo`
 in their own remote terminal as the ordinary worker account. Linux selects target,
-optional shutdown (default disabled), protected bundle and output paths. It generates
+optional shutdown and general root commands (both default disabled), protected bundle and output paths. It generates
 sudoers, a fixed no-argument root helper, policy and worker fragments. Never allow
 NOPASSWD for a shell, apt itself or the old arbitrary-command helper. An administrator
 reviews files, installs the complete protected bundle and runs visudo -c. The wizard
@@ -175,7 +180,8 @@ is ~/.local/share/pal-shell-sudo-setup/setup-*/. If lost, inspect filenames; do 
 repeat credential enrollment just to locate instructions. Distinguish generated
 templates, installed protected helpers, installation probe and an approved operation
 verified. On Mac also distinguish stored credentials from readable Keychain.
-Metadata supported/configured alone is not E2E. On Linux verify approved apt update;
+Metadata supported/configured alone is not E2E. On Linux verify approved id when
+shell_command is enabled, or apt update under the default policy;
 never enable power to test access. PTY prompts never authorize credential injection.
 
 When authorized to connect the live instance, inspect `list_plugins` and use the

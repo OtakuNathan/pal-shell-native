@@ -154,7 +154,7 @@ def install(setup):
                     lambda: subprocess.run(['/usr/sbin/visudo', '-c'], check=True))
             print('Installed. Previous configuration:', backup)
     print('No apt command, service restart, password storage or worker config change was performed.')
-    print('Next: coordinate active sessions/output, merge worker-sudo.toml, restart the user worker, then verify an approved apt update in Pal.')
+    print('Next: coordinate active sessions/output, merge worker-sudo.toml, restart the user worker, then verify an approved id (general commands) or apt update (APT policy) in Pal.')
 
 
 if __name__ == '__main__':

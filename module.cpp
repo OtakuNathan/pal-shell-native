@@ -73,6 +73,10 @@ PyMODINIT_FUNC PyInit__pal_shell_runtime() {
         Py_DECREF(result);
         return nullptr;
     }
+    if (PyModule_AddIntConstant(result, "PRIVILEGE_GATE_VERSION", 1) < 0) {
+        Py_DECREF(result);
+        return nullptr;
+    }
     try {
         // Generated callables borrow their export context. Keep registration
         // metadata for the process lifetime, like a static extension type; do

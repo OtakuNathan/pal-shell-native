@@ -51,7 +51,7 @@ class WorkerConfig:
             integer(self.tcp_port, 'tcp_port', 0, 65535)
         if os.name == 'nt' and (self.shutdown_argv or self.privilege_helper or self.askpass_helper or self.management_helper or self.management_actions):
             raise ValueError('Windows worker has no power or privilege management')
-        if set(self.management_actions) - {'apt_update','apt_install','shutdown'}:
+        if set(self.management_actions) - {'apt_update','apt_install','shell_command','shutdown'}:
             raise ValueError('Unsupported management action')
         text(self.worker_id, 'worker_id', limit=128)
         text(self.client_id, 'client_id', limit=128)
@@ -96,9 +96,10 @@ class Worker:
         self.epoch = uuid4().hex
         self.loop = asyncio.get_running_loop()
         self.runtime = native.Runtime(32)
-        if native.API_VERSION != 2 or not hasattr(self.runtime, "watch"):
+        if (native.API_VERSION != 2 or not hasattr(self.runtime, "watch")
+                or getattr(native, 'PRIVILEGE_GATE_VERSION', 0) != 1):
             self.runtime.close()
-            raise RemoteError("native_incompatible", "Worker requires the matching bounded-output native extension")
+            raise RemoteError("native_incompatible", "Worker requires the matching native extension with privilege admission")
         self.sequence = itertools.count(1)
         self.pending = {}
         self.operations: dict[str, Operation] = {}
@@ -383,6 +384,7 @@ class Worker:
                     self.management_probe = await management_status(self)
             active = sum(item['event']['status'] not in TERMINAL for item in self.outputs.values())
             return {**self.info, 'worker_id': self.config.worker_id, 'runtime_epoch': self.epoch,
+                    'privilege_gate_version': native.PRIVILEGE_GATE_VERSION,
                     'observation_methods': ['observe'],
                     'protocol_version': PROTOCOL_VERSION, 'active_tasks': active, 'draining': self.draining,
                     'retained_outputs': len(self.outputs), 'reserved_bytes': len(self.reservations) * self.config.output_limit,

@@ -24,6 +24,7 @@ def main(config):
         target = int(input('Pal target number [1]: ').strip() or '1')
         if target<=0: raise ValueError('Target must be positive')
         shutdown = input('Allow approved shutdown on this machine? Type YES to enable [disabled]: ').strip()=='YES'
+        shell_commands = input('Allow any exact root shell command after Pal approval? Type YES to enable [disabled]: ').strip()=='YES'
         default_bundle = str(Path(sys.executable).parent) if getattr(sys, 'frozen', False) else ''
         bundle_text = input(f'Complete extracted worker bundle directory [{default_bundle or "required; contains pal-shell-worker and _internal"}]: ').strip() or default_bundle
         bundle = Path(bundle_text).expanduser().resolve()
@@ -48,7 +49,7 @@ def main(config):
         import pwd
         account = pwd.getpwuid(os.getuid()).pw_name
         if not account.replace('_','').replace('-','').isalnum(): raise ValueError('Unsupported sudoers account name')
-        actions = ['apt_update','apt_install'] + (['shutdown'] if shutdown else [])
+        actions = ['apt_update','apt_install'] + (['shell_command'] if shell_commands else []) + (['shutdown'] if shutdown else [])
         policy = {'worker_uid':os.getuid(),'worker_id':config.worker_id,'client_id':config.client_id,
                   'client_public_key':config.client_public_key,'target':target,'worker_socket':str(config.socket_path),
                   'allowed_actions':actions,'protected_machine_ids':list(config.protected_machine_ids),
@@ -90,7 +91,7 @@ is performed by the installer. After it succeeds, continue at step 3 below.
 
 Manual equivalent (optional):
 
-1. Install the COMPLETE matching worker 0.4.1 bundle at {executable}.
+1. Install the COMPLETE matching worker bundle at {executable}.
    Its program, dependencies and parent paths must be root-owned and not writable
    by group/others. Do not point a root launcher at a user-writable virtualenv.
 2. In an administrator terminal, review these generated files, then install:
@@ -105,9 +106,11 @@ Manual equivalent (optional):
 3. Merge worker-sudo.toml into your worker configuration. Preserve SSH, identity,
    runtime paths and other target settings. Coordinate outstanding tasks/output
    before a user-managed worker restart. Update the matching Pal wheel/palpkg.
-4. Use run_shell(target={target}, sudo=True, cmd="apt update") and approve once.
+4. Use run_shell(target={target}, sudo=True, cmd="{'id' if shell_commands else 'apt update'}") and approve once.
    Installation, helper protection and an actual approved execution are separate checks.
    Allowed actions: {', '.join(actions)}. Ordinary commands remain unprivileged.
+   General root commands: {'enabled; the entire exact script and cwd require approval' if shell_commands else 'disabled; only the fixed APT actions are enabled'}.
+   Put the command itself in cmd without a sudo prefix; tty must be false.
    Shutdown policy: {'approval' if shutdown else 'disabled'}. To change it later, rerun --setup-sudo;
    update BOTH the administrator policy and worker-sudo.toml, then coordinate worker restart.
    Verify list_remote reports management.shutdown.supported={'true' if shutdown else 'false'}.

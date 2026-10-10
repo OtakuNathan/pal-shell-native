@@ -48,6 +48,48 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(ValueError):helper.verify(self.config,self.envelope,now=time.time()+100)
         with self.assertRaises(ValueError):helper.verify(self.config,self.envelope,now=time.time()-1000)
 
+    def shell_envelope(self, command='pacman -S --noconfirm cmake', cwd='/tmp'):
+        args = {**self.args, 'cmd': command, 'cwd': cwd}
+        args['management'] = normalize(args)
+        grant = {**self.envelope['approval'], 'fingerprint': digest(['privileged', args])}
+        return {'args': args, 'approval': grant, 'signature': self.key.sign(canonical(grant)).hex()}
+
+    def test_general_command_requires_explicit_root_policy(self):
+        envelope = self.shell_envelope()
+        with self.assertRaises(ValueError):
+            helper.verify(self.config, envelope)
+        config = {**self.config, 'allowed_actions': ['shell_command']}
+        self.assertEqual(helper.verify(config, envelope),
+            {'action': 'shell_command', 'cmd': 'pacman -S --noconfirm cmake', 'cwd': '/tmp'})
+        self.assertEqual(helper.command(envelope['args']['management']),
+            ['/bin/sh', '-c', 'pacman -S --noconfirm cmake'])
+
+    def test_general_signature_binds_exact_script_and_directory(self):
+        config = {**self.config, 'allowed_actions': ['shell_command']}
+        envelope = self.shell_envelope('printf "a && b"; id | cat\ntrue')
+        helper.verify(config, envelope)
+        for field, value in [('cmd', 'id'), ('cwd', '/root'),
+                             ('management', {'action': 'shell_command', 'cmd': 'id', 'cwd': '/tmp'})]:
+            changed = copy.deepcopy(envelope)
+            changed['args'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                helper.verify(config, changed)
+
+    def test_general_replay_executes_once_in_approved_directory(self):
+        envelope = self.shell_envelope('id; pwd', '/var/tmp')
+        with tempfile.TemporaryDirectory() as directory:
+            config = {**self.config, 'allowed_actions': ['shell_command'], 'state_directory': directory}
+            with patch.object(helper, 'protected'), patch.object(helper, 'consume'), \
+                 patch.object(helper, 'run_child', return_value=0) as run:
+                self.assertEqual(helper.execute(config, envelope), 0)
+                self.assertEqual(helper.execute(config, envelope), 0)
+                run.assert_called_once_with(['/bin/sh', '-c', 'id; pwd'], None, cwd='/var/tmp')
+
+    def test_general_invalid_paths_and_interactive_requests_rejected(self):
+        for change in ({'cwd': 'relative'}, {'cwd': '/tmp\0bad'}, {'cmd': 'id\0bad'}, {'tty': True}):
+            with self.subTest(change=change), self.assertRaises(RemoteError):
+                normalize({**self.args, **change})
+
     def test_replay_and_concurrent_submit_execute_once(self):
         with tempfile.TemporaryDirectory() as d:
             config={**self.config,'state_directory':d}

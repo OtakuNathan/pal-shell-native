@@ -35,6 +35,8 @@ class ShellRuntime:
         self.loop_thread = threading.get_ident()
         if native.API_VERSION != 2:
             raise ShellRejected("native_incompatible: install matching pal-shell-native (API 2)")
+        if getattr(native, 'PRIVILEGE_GATE_VERSION', 0) != 1:
+            raise ShellRejected("native_incompatible: install matching native extension with privilege admission")
         self.native = native.Runtime(completed_capacity)
         self.epoch = uuid4().hex
         self._sequence = itertools.count(1)
@@ -74,7 +76,7 @@ class ShellRuntime:
             if pending is None:
                 return
             future, operation, turn = pending
-            if operation == "run" and session:
+            if operation in {"run", "run_authorized"} and session:
                 self._owners[session] = turn
             if not future.done():
                 future.set_result(event)
@@ -109,10 +111,10 @@ class ShellRuntime:
                 result = await asyncio.shield(future)
                 if operation == "acquire_write" and result["status"] == "write_acquired":
                     await self._request("release_write", result["session_id"], cleanup=True)
-                if operation == "run" and result["session_id"]:
+                if operation in {"run", "run_authorized"} and result["session_id"]:
                     session = result["session_id"]
                     await self._discard_cancelled_session(session)
-                elif operation == "run" and result.get("output_id"):
+                elif operation in {"run", "run_authorized"} and result.get("output_id"):
                     await self._request("release_output", result["output_id"], cleanup=True)
                 raise
             if result["status"] == "rejected":
@@ -123,7 +125,8 @@ class ShellRuntime:
 
     async def run(self, cmd: str, *, cwd: str = "", tty: bool = False,
                   wait_ms: int | None = None, timeout_ms: int | None = None,
-                  shell: str = "/bin/bash", turn_id: str = "", retain_output: bool = False, inline_limit: int = 0, load_output: bool = True) -> dict:
+                  shell: str = "/bin/bash", turn_id: str = "", retain_output: bool = False, inline_limit: int = 0, load_output: bool = True,
+                  _authorized: bool = False) -> dict:
         if not load_output and not retain_output:
             raise ValueError("file handoff requires retained output")
         task = asyncio.current_task()
@@ -131,7 +134,7 @@ class ShellRuntime:
         result = None
         try:
             result = await self._request(
-                "run", shell, cmd, os.path.expanduser(cwd), tty,
+                "run_authorized" if _authorized else "run", shell, cmd, os.path.expanduser(cwd), tty,
                 (1000 if tty else 300000) if wait_ms is None else wait_ms,
                 0 if timeout_ms is None else timeout_ms, inline_limit, turn=turn_id,
             )

@@ -29,6 +29,11 @@ public:
              bool tty, int wait_ms, int timeout_ms, int inline_limit);
     void run_limited(id_t request, std::string shell, std::string command, std::string cwd,
                      bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit);
+    // Trusted host entry points; call only after a single-request approval.
+    void run_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+                        bool tty, int wait_ms, int timeout_ms, int inline_limit);
+    void run_limited_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+                                bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit);
     void read(id_t request, id_t session, int wait_ms);
     void watch(id_t request, id_t session, int wait_ms, int extend_by_ms);
     void extend(id_t request, id_t session, int extend_by_ms);
@@ -46,6 +51,9 @@ public:
     void close();
     int callback_errors() const;
 private:
+    void launch(id_t request, std::string shell, std::string command, std::string cwd,
+                bool tty, int wait_ms, int timeout_ms, int inline_limit,
+                id_t output_limit, bool allow_privilege);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
