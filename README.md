@@ -14,9 +14,10 @@ Installing the wheel alone does not activate Native shell.
 
 - Backend 0.4.2 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Known compatible Pal baseline: commit
-  `618f70f4d18b1972aae0580fd7955e8076479d0d` (indexed L1 request visibility, execution extensions, shared diagnostics, and Bunshin verification).
+  `9d8cbe906906522e1f4a0d2a50a709385a4209f3` (indexed L1 request visibility, execution extensions, shared diagnostics, Bunshin verification, and enum-field tool discovery).
   Compatible later versions must preserve these host contracts, including
-  `pal.shared.diagnostics` and `pal.bunshin.verification_builder`.
+  `pal.shared.diagnostics`, `pal.bunshin.verification_builder`, and
+  `ToolGuidance.search_enum_fields`.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a
   matching Python/glibc. Use pip to check tags; never rename an incompatible wheel.
@@ -114,7 +115,7 @@ suite in `tests/pal_host`. CI installs the pinned Pal baseline and this backend.
 For local source checkouts, install Pal's test dependencies and this wheel, then:
 
 ```sh
-PYTHONPATH=pal_plugin:tests/pal_host_support python -m unittest discover -s tests/pal_host -v
+PYTHONPATH=pal_plugin:tests/pal_host_support python -m pytest -q tests/pal_host
 ```
 
 ## Ownership and limits

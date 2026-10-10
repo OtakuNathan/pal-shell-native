@@ -8,6 +8,10 @@ Unreleased: concurrent shell sessions without session-wide write exclusion.
 - Classified verification uses the same admission policy and still waits for its
   execution result before recording evidence. Nested execution no longer rejects
   itself through a host write lock.
+- CI and the documented Pal baseline now use
+  `9d8cbe906906522e1f4a0d2a50a709385a4209f3`, which supports the plugin's
+  enum-field tool discovery. Host CI uses pytest to include both unittest and
+  pytest integration cases.
 - Session ownership, output delivery, cancellation, capacity limits and lifecycle
   checks remain. UNKNOWN remote operations stay retained and are not replayed;
   independent commands can proceed. Controls on one session remain serialized.

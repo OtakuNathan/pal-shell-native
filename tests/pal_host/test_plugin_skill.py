@@ -86,8 +86,19 @@ class NativeSkillTests(unittest.TestCase):
             with self.subTest(module=module), patch.dict(sys.modules, {module: None}):
                 result = verify(None)
                 self.assertFalse(result['ok'])
-                self.assertIn('618f70f4d18b1972aae0580fd7955e8076479d0d', result['detail'])
+                self.assertIn('9d8cbe906906522e1f4a0d2a50a709385a4209f3', result['detail'])
                 self.assertIn(module, result['detail'])
+
+    def test_package_verification_rejects_host_without_enum_field_discovery(self):
+        import runpy
+        from unittest.mock import patch
+        from pal.execution.tool_facade import ToolGuidance
+        verify = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'pal_plugin/hooks.py'))['verify']
+        fields = {name: field for name, field in ToolGuidance.model_fields.items() if name != 'search_enum_fields'}
+        with patch.object(ToolGuidance, 'model_fields', fields):
+            result = verify(None)
+        self.assertFalse(result['ok'])
+        self.assertIn('enum-field tool discovery', result['detail'])
 
     def test_install_and_activation_reject_host_without_indexed_visibility(self):
         import runpy

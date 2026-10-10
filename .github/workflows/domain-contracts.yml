@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: 618f70f4d18b1972aae0580fd7955e8076479d0d
+          ref: 9d8cbe906906522e1f4a0d2a50a709385a4209f3
           path: .pal-host
       - uses: actions/setup-python@v5
         with:
@@ -24,6 +24,6 @@ jobs:
       - run: python -m pip install .
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '2'
-      - run: python -m unittest discover -s tests/pal_host -v
+      - run: python -m pytest -q tests/pal_host
         env:
           PYTHONPATH: ${{ github.workspace }}/.pal-host/src:${{ github.workspace }}/pal_plugin:${{ github.workspace }}/tests/pal_host_support
