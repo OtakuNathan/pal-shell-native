@@ -135,6 +135,9 @@ class ExtendSessionInput(SessionIdentifierInput):
 
 
 STATUS_GUIDANCE = ToolGuidance(
+    search_domain="shell", search_domain_aliases=("terminal",),
+    search_domain_description="Shell command execution and retained session output.",
+    search_terms=("status", "health", "inventory", "sessions", "running", "background", "retained"),
     search_objects=("session", "sessions"),
     purpose="Show current shell sessions and their last observed execution states.",
     use_when="A session ID or execution state is needed.",
@@ -255,7 +258,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_read_async",
         examples=({'session_id': 1},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "read"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('read', 'inspect', 'retrieve', 'output', 'stdout', 'stderr', 'progress', 'export'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Read an existing shell session or retry export of retained output.', use_when='Use a returned identifier for a needed fresh snapshot or retained-output recovery. Successful delivery updates output acknowledgement; do not poll repeatedly or rerun the command.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -273,7 +280,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_write_async",
         examples=({'session_id': 1, 'text': '\n'},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "write"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('send', 'type', 'stdin', 'input', 'pty', 'terminal'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Send exact input to a live PTY shell session.', use_when='Requires a live PTY with open stdin. Acceptance only confirms queued input; inspect output before repeating uncertain input.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -291,7 +302,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_resize_async",
         examples=({'session_id': 1, 'rows': 24, 'columns': 80},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "resize"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('resize', 'terminal', 'pty', 'size', 'dimensions'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Resize a live PTY shell session.', use_when='Requires a live PTY; rows and columns are terminal dimensions.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -309,7 +324,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_terminate_async",
         examples=({'session_id': 1},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "terminate"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('cancel', 'stop', 'kill', 'terminate', 'process'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Request cancellation of an existing shell session.', use_when='Cancellation acceptance does not establish exit; read terminal status to confirm.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -327,7 +346,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_release_async",
         examples=({'session_id': 1},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "release"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('discard', 'forget', 'cleanup', 'release', 'retained'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Discard completed shell session output or retained failed export.', use_when='Release only when output is no longer needed. A running session cannot be released.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -345,7 +368,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_watch_async",
         examples=({'session_id': 1, 'wait_ms': 1000},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "watch"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('watch', 'notify', 'notification', 'completion', 'background'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Arm one background shell session decision event.', use_when='Returns immediately without stopping execution; optional extension applies only to an unexpired extendable finite deadline.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -363,7 +390,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_extend_async",
         examples=({'session_id': 1, 'extend_by_ms': 1000},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "extend"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output', 'deadline', 'deadlines'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('extend', 'timeout', 'deadline', 'duration'),
+            search_objects=('session', 'sessions', 'output', 'deadline', 'deadlines'),
             purpose='Extend an existing finite shell session deadline.', use_when='Requires an unexpired extendable finite deadline. No deadline needs no extension.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -381,7 +412,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution=INDIRECT_CONTROL, async_handler_name="session_unwatch_async",
         examples=({'session_id': 1},),
         metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session", "native_shell_session_action": "unwatch"},
-        guidance=ToolGuidance(search_objects=('session', 'sessions', 'output'),
+        guidance=ToolGuidance(
+            search_domain="shell",
+            search_domain_description="Shell command execution and retained session output.",
+            search_terms=('silence', 'mute', 'stop', 'notifications', 'unwatch'),
+            search_objects=('session', 'sessions', 'output'),
             purpose='Disable unsolicited notifications from a shell session.', use_when='Does not stop the process or discard output; watch_shell_session restores attention.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
@@ -425,7 +460,12 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_list", aliases=("list_remote",),
         InputModel=ListRemoteInput, OutputModel=StructuredToolOutput, execution=INDIRECT_LOCAL_READ,
-        async_handler_name="list_remote_async", metadata={"background_execution": True, "native_shell_action": "list_remote"}, guidance=ToolGuidance(search_objects=('target', 'targets'),
+        async_handler_name="list_remote_async", metadata={"background_execution": True, "native_shell_action": "list_remote"}, guidance=ToolGuidance(
+            search_domain="remote",
+            search_domain_aliases=("remote host",),
+            search_domain_description="Discover targets and manage startup/shutdown; execute commands and manage sessions in shell.",
+            search_terms=('host', 'hosts', 'worker', 'workers', 'machine', 'machines', 'connection', 'connectivity', 'readiness', 'available', 'configured'),
+            search_objects=('target', 'targets'),
             purpose="List execution targets and their readiness; defaults to a compact summary.",
             use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed. Unreachable entries remain valid targets. Inspect probe_error; connection or authentication failure does not prove a startup action is needed.",
             do_not_use_when="A returned session already fixes its target.",
@@ -469,6 +509,9 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         namespace="operation", scope="module", family="exec", action_name="remote_start", aliases=("start_remote_target",),
         InputModel=RemoteStartInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
         async_handler_name="remote_start_async", metadata={"background_execution": True, "native_shell_action": "remote_start"}, guidance=ToolGuidance(
+            search_domain="remote",
+            search_domain_aliases=("remote host",),
+            search_domain_description="Discover targets and manage startup/shutdown; execute commands and manage sessions in shell.",
             search_objects=("target", "targets"),
             search_terms=("wake", "waking", "boot", "startup"),
             purpose="Explicitly invoke one preconfigured target startup action (wake or service start). Completion does not prove readiness; refresh target metadata to verify.",
@@ -493,7 +536,12 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_power", aliases=("shutdown_remote_target",),
         InputModel=RemotePowerInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
-        async_handler_name="remote_power_async", metadata={"background_execution": True, "native_shell_action": "remote_power"}, guidance=ToolGuidance(search_objects=('target', 'targets'),
+        async_handler_name="remote_power_async", metadata={"background_execution": True, "native_shell_action": "remote_power"}, guidance=ToolGuidance(
+            search_domain="remote",
+            search_domain_aliases=("remote host",),
+            search_domain_description="Discover targets and manage startup/shutdown; execute commands and manage sessions in shell.",
+            search_terms=('power', 'off', 'shutdown', 'stop', 'machine', 'host', 'worker'),
+            search_objects=('target', 'targets'),
             purpose="Request target shutdown after a single human approval and atomic worker busy check. Accepted does not prove power-off; unknown is an unconfirmed outcome, not success.",
             use_when="list_remote reports management.shutdown.supported=true and the target owner authorizes shutdown.",
             do_not_use_when="Only disconnecting the plugin or stopping one command is intended; never shut down this Pal host.",
@@ -553,7 +601,7 @@ def build_provider(runtime):
             metadata={'background_execution': True, 'preserve_role_contract': True,
                       'native_shell_action': 'run', 'native_shell_target': target.target},
             guidance=REMOTE_RUN_GUIDANCE.model_copy(update={
-                'purpose': f'Run on configured target {target.target} ({target.name}). The target is fixed.',
+                'purpose': f'Run a shell command on configured target {target.target} ({target.name}). The target is fixed.',
             }))(sync)
         methods[async_name] = run
     provider_type = type('ConfiguredNativeExecutionProvider', (NativeExecutionProvider,), methods)

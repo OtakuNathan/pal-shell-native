@@ -90,6 +90,22 @@ shortcut = "pi"
         provider = build_provider(runtime)
         tree = compile_provider_subtree(provider, module_id='execution', lifecycle_scope='runtime', detachable=False)
         runtime.mount_subtree(SimpleNamespace(mounted_subtree=tree))
+        for domain, query, expected in (
+            ('shell', 'read session output', 'read_shell_session'),
+            ('terminal', 'write terminal input', 'write_shell_session'),
+            ('remote', 'available machines', 'list_remote'),
+            ('remote host', 'wake host', 'start_remote_target'),
+            ('remote', 'power off machine', 'shutdown_remote_target'),
+            ('shell', 'run pi command', 'run_shell_pi'),
+        ):
+            result = runtime._search_generation(runtime.registry_generation, {'domain': domain, 'query': query})
+            assert expected in [hit['alias'] for hit in result['hits']], (domain, query, result)
+        for alias in ('run_shell', 'read_shell_session', 'write_shell_session', 'run_shell_pi'):
+            assert runtime.registry_generation.search_records[alias]['domain'] == 'shell'
+        for alias in ('list_remote', 'start_remote_target', 'shutdown_remote_target'):
+            assert runtime.registry_generation.search_records[alias]['domain'] == 'remote'
+        assert not runtime._search_generation(runtime.registry_generation,
+            {'domain': 'remote', 'query': 'read_shell_session'})['hits']
         for action in ('read', 'write', 'resize', 'terminate', 'release', 'watch', 'extend', 'unwatch'):
             hits = runtime._search_generation(runtime.registry_generation, {'query': f'{action} shell sessions'})['hits']
             assert f'{action}_shell_session' in [hit['alias'] for hit in hits]

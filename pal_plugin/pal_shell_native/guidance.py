@@ -21,6 +21,9 @@ RUNNING_SESSION_GUIDANCE = (
 
 
 RUN_GUIDANCE = ToolGuidance(
+    search_domain="shell", search_domain_aliases=("terminal",),
+    search_domain_description="Shell command execution and retained session output.",
+    search_terms=("execute", "run", "command", "terminal", "local", "remote", "build", "test"),
     search_objects=("command", "commands"),
     purpose="Run a shell command; return its result or a retained session snapshot.",
     use_when=(
@@ -54,6 +57,9 @@ RUN_GUIDANCE = ToolGuidance(
 )
 
 SESSION_GUIDANCE = ToolGuidance(
+    search_domain="shell", search_domain_aliases=("terminal",),
+    search_domain_description="Shell command execution and retained session output.",
+    search_terms=("pty", "terminal", "input", "output", "progress", "cancel", "notification", "deadline"),
     search_objects=("session", "sessions", "output"),
     search_enum_fields=("action",),
     purpose="Inspect or control an existing shell session without rerunning its command.",
