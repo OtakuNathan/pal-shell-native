@@ -695,9 +695,22 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         slot = RemoteSlot(replace(self.target, ssh_host=getpass.getuser()+'@127.0.0.1', ssh_port=port,
             ssh_identity=str(self.path/'ssh-identity'), known_hosts=str(known_hosts)))
         try:
-            await asyncio.sleep(.15)
-            if daemon.returncode is not None:
-                self.skipTest('Isolated sshd unavailable: '+(self.path/'sshd.log').read_text()[:300])
+            async def wait_for_listener():
+                while True:
+                    if daemon.returncode is not None:
+                        self.skipTest('Isolated sshd unavailable: '+(self.path/'sshd.log').read_text()[:300])
+                    try:
+                        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+                    except OSError:
+                        await asyncio.sleep(.02)
+                        continue
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+            try:
+                await asyncio.wait_for(wait_for_listener(), timeout=5)
+            except TimeoutError:
+                self.fail('Isolated sshd did not start listening: '+(self.path/'sshd.log').read_text()[-1500:])
             try:
                 metadata = await slot.request('metadata', {})
             except RemoteError as exc:
