@@ -157,7 +157,7 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
         sessions = {item['session_id']: item for item in inspected.structured['sessions']}
         self.assertIn(started.structured['session_id'], sessions)
         self.assertEqual(sessions[started.structured['session_id']]['last_observed_status'], 'running')
-        stopped = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {'session_id': started.structured['session_id'], 'action': 'terminate'}})
+        stopped = await self.tool('call_tool', {'name': 'terminate_shell_session', 'args': {'session_id': started.structured['session_id']}})
         self.assertTrue(stopped.ok, stopped.llm_text)
 
     async def test_failed_normalization_preserves_cause_and_reexports_without_reexecution(self):

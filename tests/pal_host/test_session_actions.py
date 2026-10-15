@@ -107,9 +107,37 @@ class SessionActionTests(unittest.IsolatedAsyncioTestCase):
             with patch('pal_shell_native.snapshot_delivery.materialize_delivery', side_effect=OSError('disk unavailable')):
                 await self.tool('run_shell', {'cmd': 'printf discarded-output'})
             ref = next(p for p in self.runtime.shell_owner.pending if self.runtime.shell_owner.pending[p].failure)
+            inventory = await self.tool('inspect_shell_status', {})
+            self.assertEqual([item['output_ref'] for item in inventory.structured['retained_outputs']], [ref])
             released = await self.tool('release_shell_session', {'output_ref': ref})
             self.assertTrue(released.ok, released.llm_text)
             self.assertNotIn(ref, self.runtime.shell_owner.pending)
+            inventory = await self.tool('inspect_shell_status', {})
+            self.assertEqual(inventory.structured['retained_outputs'], [])
+
+    async def test_status_lists_only_delivered_export_failures_without_exposing_owner_metadata(self):
+        from pal_shell_native.output_contract import PendingOutput
+        owner = self.runtime.shell_owner
+        def pending(*, delivered, failure):
+            return PendingOutput({'session_id': 0, 'target': 0, 'status': 'exited',
+                                  'output_id': 'private-native-output', 'runtime_epoch': 'private-epoch'},
+                                 'private-turn', delivered=delivered, failure=failure)
+        owner.pending.update({
+            'recoverable': pending(delivered=True, failure='private-storage-diagnostic'),
+            'in-flight': pending(delivered=False, failure='not delivered'),
+            'successful': pending(delivered=True, failure=''),
+        })
+        try:
+            inventory = await self.tool('inspect_shell_status', {})
+            self.assertTrue(inventory.ok, inventory.llm_text)
+            self.assertEqual(inventory.structured['retained_outputs'], [
+                {'output_ref': 'recoverable', 'target': 0, 'status': 'exited'},
+            ])
+            for internal in ('private-native-output', 'private-epoch', 'private-turn', 'private-storage-diagnostic', 'in-flight', 'successful'):
+                self.assertNotIn(internal, inventory.llm_text)
+            self.assertEqual(set(owner.pending), {'recoverable', 'in-flight', 'successful'})
+        finally:
+            owner.pending.clear()
 
     async def test_role_allowlist_and_other_owner_cannot_gain_session_controls(self):
         without_shell = BunshinScopedExecutionRuntime(self.runtime, ['op_file_write'], {})

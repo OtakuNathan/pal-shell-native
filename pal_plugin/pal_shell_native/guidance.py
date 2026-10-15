@@ -23,9 +23,9 @@ RUNNING_SESSION_GUIDANCE = (
 RUN_GUIDANCE = ToolGuidance(
     search_domain="shell", search_domain_aliases=("terminal",),
     search_domain_description="Shell command execution and retained session output.",
-    search_terms=("execute", "run", "command", "terminal", "local", "remote", "build", "test"),
+    search_terms=("execute", "run", "command", "terminal", "local", "remote", "build", "test", "delete", "remove", "unlink", "file", "directory", "folder"),
     search_objects=("command", "commands"),
-    purpose="Run a shell command; return its result or a retained session snapshot.",
+    purpose="Run a shell command for builds, tests, filesystem search or authorized path deletion; return its result or retained session snapshot.",
     use_when=(
         "Execute commands, builds or tests. Prefer rg for repository text search and rg --files for file"
         " enumeration; use alternatives only when rg is unavailable or unsuitable. Search saved output snapshots with rg. "
@@ -52,7 +52,7 @@ RUN_GUIDANCE = ToolGuidance(
         " never repeat a command to retrieve output. A missing session does not prove it never ran."
     ),
     next_tool_hints=(
-        NextToolHint(name="manage_shell_session", use_when="Inspect progress, send PTY input, resize or terminate a returned session."),
+        NextToolHint(name="read_shell_session", use_when="A fresh snapshot of a returned session or retained output recovery is needed."),
     ),
 )
 
@@ -113,7 +113,6 @@ REMOTE_RUN_GUIDANCE = RUN_GUIDANCE.model_copy(update={
     ),
     "failure_next_steps": RUN_GUIDANCE.failure_next_steps,
     "next_tool_hints": RUN_GUIDANCE.next_tool_hints + (
-        NextToolHint(name="read_shell_session", use_when="A fresh session snapshot or export of retained output is needed; never rerun its producer."),
         NextToolHint(name="write_shell_session", use_when="Send input to a live PTY; inspect output before resending uncertain input."),
         NextToolHint(name="terminate_shell_session", use_when="Cancellation is required; confirm terminal status afterwards."),
         NextToolHint(name="search_tools", use_when="With user consent, discover search_skills/inject_skill and use pal.remote.setup to enroll a newly reachable SSH host as a remote target."),

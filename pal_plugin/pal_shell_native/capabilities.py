@@ -137,13 +137,15 @@ class ExtendSessionInput(SessionIdentifierInput):
 STATUS_GUIDANCE = ToolGuidance(
     search_domain="shell", search_domain_aliases=("terminal",),
     search_domain_description="Shell command execution and retained session output.",
-    search_terms=("status", "health", "inventory", "sessions", "running", "background", "retained"),
-    search_objects=("session", "sessions"),
-    purpose="Show current shell sessions and their last observed execution states.",
-    use_when="A session ID or execution state is needed.",
+    search_terms=("status", "health", "inventory", "sessions", "running", "background", "retained", "recovery"),
+    search_objects=("session", "sessions", "output", "outputs"),
+    purpose="Show current shell sessions, last observed execution states, and retained output references awaiting export recovery.",
+    use_when="A session ID, execution state or lost output_ref is needed, including after context compaction. retained_outputs lists delivered export failures only; read_shell_session with its output_ref retries exporting retained output without rerunning the command.",
     do_not_use_when="The returned result already contains the session and next operation you need.",
     failure_next_steps="Use inspect_execution_state and observe_core if the execution backend itself is unavailable.",
-    next_tool_hints=(NextToolHint(name="manage_shell_session", use_when="Inspect or control a listed session."),),
+    next_tool_hints=(
+        NextToolHint(name="read_shell_session", use_when="Retry export with a listed retained output_ref after resolving output storage availability."),
+    ),
 )
 
 
@@ -192,12 +194,6 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             owner.release_input_lease(lease_id)
         return await owner.stage(call, result)
 
-    @capability_action(
-        namespace="operation", scope="module", family="exec", action_name="session", aliases=("manage_shell_session",),
-        InputModel=NativeSessionInput, OutputModel=StructuredToolOutput, execution=INDIRECT_CONTROL,
-        examples=({"session_id": 1, "action": "read"},),
-        async_handler_name="session_async", metadata={"background_execution": True, "preserve_role_invocation_mode": True, "native_shell_action": "session"}, guidance=RESIDENT_SESSION_GUIDANCE,
-    )
     def session(self, call):
         raise RuntimeError("native shell requires asynchronous execution")
 
@@ -439,7 +435,13 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             {"session_id": sid, "cmd": item["cmd"], "watching": item.get("watching", True),
              "last_observed_status": item.get("latest_status", "running"), "target": item.get("target", 0),
              **({"observation_error": item["observation_error"]} if item.get("observation_error") else {})}
-            for sid, item in owner.sessions.items()]})
+            for sid, item in owner.sessions.items()],
+            "retained_outputs": [
+                {"output_ref": call_id, "target": pending.result.get("target", 0),
+                 "status": pending.result["status"],
+                 **({"session_id": pending.result["session_id"]} if pending.result.get("session_id") else {})}
+                for call_id, pending in owner.pending.items() if pending.delivered and pending.failure
+            ]})
 
     async def shell_status_async(self, call):
         from .adapter import TERMINAL

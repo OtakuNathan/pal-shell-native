@@ -72,7 +72,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         return await self.runtime.execute_tool_async(new_tool_call(name=name, args=args or {}), budget=budget, turn_id=turn_id)
 
     async def session(self, sid, **args):
-        return await self.tool("call_tool", {"name": "manage_shell_session", "args": {"session_id": sid, **args}})
+        action = args.pop("action", "read")
+        return await self.tool("call_tool", {"name": f"{action}_shell_session", "args": {"session_id": sid, **args}})
 
     def origin(self, call):
         event = EventEnvelope(event_kind="user.message", source_kind="channel", payload={"text": "build"}, event_id="origin")
@@ -225,8 +226,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_entry_registration_and_pty(self):
         generation = self.runtime.registry_generation
         self.assertIn("wait_ms", generation.record_for_alias("run_shell").input_schema["properties"])
-        self.assertNotIn("manage_shell_session", generation.direct_aliases)
-        self.assertIn('`manage_shell_session` (indirect)', generation.record_for_alias("run_shell").compiled_description)
+        self.assertIsNone(generation.record_for_alias("manage_shell_session"))
+        self.assertIn('`read_shell_session` (indirect)', generation.record_for_alias("run_shell").compiled_description)
         started = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})
         self.assertTrue(started.ok, started.text)
         sid = started.structured["session_id"]
@@ -454,7 +455,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.owner.pending)
         for alias in ("shell_recover_output", "shell_reconcile"):
             self.assertIsNone(self.runtime.registry_generation.record_for_alias(alias))
-        schema = self.runtime.registry_generation.record_for_alias('manage_shell_session').input_schema
+        schema = self.runtime.registry_generation.record_for_alias('read_shell_session').input_schema
         self.assertNotIn('retry_notification', str(schema))
 
     async def test_persistent_snapshot_failure_preserves_operation_and_output(self):
@@ -475,8 +476,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.owner.completion_blocked)
         self.assertNotIn('shell_recover_output', result.text)
         self.assertNotIn('acknowledg', result.text)
-        released = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {
-            'output_ref': call.call_id, 'action': 'release'}})
+        released = await self.tool('call_tool', {'name': 'release_shell_session', 'args': {
+            'output_ref': call.call_id}})
         self.assertTrue(released.ok, released.text)
         self.assertFalse(self.owner.pending)
 
@@ -622,13 +623,46 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             hints = result.invocation_result.affordances
             self.assertEqual(len(hints), 1)
             self.assertEqual(hints[0].arguments['args'], {'session_id': sid} if sid else {'output_ref': call.call_id})
-            recovered = await self.tool('call_tool', {'name': 'manage_shell_session', 'args': {'session_id': sid} if sid else {'output_ref': call.call_id}},
+            recovered = await self.tool('call_tool', {'name': 'read_shell_session', 'args': {'session_id': sid} if sid else {'output_ref': call.call_id}},
                 budget=ToolCallBudget(max_output_chars=1500, preview_chars=200))
             self.assertTrue(recovered.snapshot_refs)
             self.assertIn(b'\0' * 8000, Path(recovered.snapshot_refs[0].path).read_bytes())
             self.assertEqual(counter.read_text(), 'once')
             await asyncio.gather(*tuple(self.owner.observations.acking.values()))
             self.assertFalse(self.owner.pending)
+
+    async def test_lost_output_ref_is_rediscovered_after_history_is_compacted(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as root:
+            counter = Path(root) / 'executions'
+            call = new_tool_call(name='run_shell', args={
+                'cmd': f'printf once >> {shlex.quote(str(counter))}; printf retained-evidence',
+                'wait_ms': 5000,
+            })
+            origin = self.origin(call)
+            with patch('pal_shell_native.snapshot_delivery.materialize_delivery', side_effect=OSError('disk unavailable')), patch('pal_shell_native.recovery.RETRY_DELAYS', (0, 0)):
+                failed = await self.runtime.execute_tool_async(call, turn_id='origin')
+                await self.commit_origin(origin, call, failed)
+            self.assertEqual(failed.structured['session_id'], 0)
+            self.assertFalse(self.owner.sessions)
+
+            # Remove even the original error/handle: recovery must use live
+            # inventory, without depending on a model-generated compact summary.
+            self.memory.l1_store.turns.clear()
+            self.memory.begin_l1_turn('after-compact', user_text='recover output')
+            inventory = await self.tool('call_tool', {'name': 'inspect_shell_status', 'args': {}}, turn_id='after-compact')
+            self.assertTrue(inventory.ok, inventory.llm_text)
+            retained, = inventory.structured['retained_outputs']
+            self.assertIn(retained['output_ref'], inventory.llm_text)
+            recovered = await self.tool('call_tool', {'name': 'read_shell_session', 'args': {
+                'output_ref': retained['output_ref'],
+            }}, turn_id='after-compact')
+            self.assertTrue(recovered.ok, recovered.llm_text)
+            self.assertIn('retained-evidence', recovered.llm_text)
+            self.assertEqual(counter.read_text(), 'once')
+            await asyncio.gather(*tuple(self.owner.observations.acking.values()))
+            inventory = await self.tool('call_tool', {'name': 'inspect_shell_status', 'args': {}}, turn_id='after-compact')
+            self.assertEqual(inventory.structured['retained_outputs'], [])
 
     async def test_running_shell_keeps_request_snapshot_after_compact_and_new_request(self):
         import shlex

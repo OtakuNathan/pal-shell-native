@@ -89,4 +89,4 @@ class BunshinShellSessions:
             return ""
         return ("This role still owns shell work or undelivered output and cannot finish yet. "
                 "An eligible observation is ready for this request. Use its state and output to continue; "
-                "do not repeat the command. Use manage_shell_session only when execution control or a fresh read is needed.")
+                "do not repeat the command. Use the appropriate session tool only when execution control or a fresh read is needed.")

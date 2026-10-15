@@ -279,7 +279,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
     def role_capabilities(self, allowed):
         from pal.bunshin.scoped_execution import SHELL_EVIDENCE_CAPABILITIES
         if (SHELL_EVIDENCE_CAPABILITIES | {"op_exec_shell"}).intersection(allowed):
-            return list(dict.fromkeys([*allowed, "op_exec_session", *sorted(SESSION_CAPABILITIES), "op_exec_status", "op_tool_call", "op_tool_read"]))
+            return list(dict.fromkeys([*allowed, *sorted(SESSION_CAPABILITIES), "op_exec_status", "op_tool_call", "op_tool_read"]))
         return allowed
 
     def project_role_descriptor(self, descriptor):
@@ -298,7 +298,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     " A nonzero session_id identifies retained execution. The next model request immediately reads prepared observations."
                     " A text-only response while work remains yields until an eligible event. Use tty=true for interactive input.",
                 "failure_next_steps": guidance.failure_next_steps + " Do not replay a live session or poll repeatedly."
-                    " Use manage_shell_session for PTY input, termination or a needed fresh snapshot."
+                    " Use write_shell_session for PTY input, terminate_shell_session to cancel, or read_shell_session for needed fresh output."
                     " Success requires status=exited and returncode=0. Complete required execution before submission.",
             })
         if canonical == "op_exec_session":

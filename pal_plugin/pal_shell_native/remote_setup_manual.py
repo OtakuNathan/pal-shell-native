@@ -186,14 +186,14 @@ never enable power to test access. PTY prompts never authorize credential inject
 
 When authorized to connect the live instance, inspect `list_plugins` and use the
 control appropriate to its state. `rescan_plugins` discovers manifests;
-`enable_plugin(name="remote")` enables and attaches a disabled plugin.
-`attach_plugin(name="remote")` loads a detached enabled plugin and preserves an
-already attached instance. Use `reload_plugin(name="remote")` to load changed
+`manage_plugin(name="remote", operation="enable")` enables and attaches a disabled plugin.
+`manage_plugin(name="remote", operation="attach")` loads a detached enabled plugin and preserves an
+already attached instance. Use `manage_plugin(name="remote", operation="reload")` to load changed
 plugin code or target configuration. Do not repeat activation already completed
 by an installer. Remote defaults to enabled when native execution is available;
 missing/empty remote.toml attaches with no remote targets or Hub process. Existing
 explicit disable preferences are preserved. After adding target configuration,
-use `reload_plugin(name="remote")` for the enabled plugin.
+use `manage_plugin(name="remote", operation="reload")` for the enabled plugin.
 An optional unique shortcut in each target configuration creates run_shell_<shortcut>
 with that target fixed; omit it when no shortcut is needed. Shortcuts are compiled
 at plugin activation, so changing one requires a coordinated plugin reload.

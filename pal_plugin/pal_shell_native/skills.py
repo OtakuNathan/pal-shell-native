@@ -20,7 +20,7 @@ class NativePluginProvider:
             capability_refs=(
                 "search_skills", "inject_skill", "search_tools", "run_shell", "call_tool",
                 "list_remote", "install_package", "list_plugins", "rescan_plugins",
-                "enable_plugin", "attach_plugin", "reload_plugin",
+                "manage_plugin",
             ),
             applicability_star=SkillApplicabilitySTAR(
                 situation="The user wants help adding a remote execution host to Pal.",

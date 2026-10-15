@@ -161,8 +161,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         _, result = await self.tool("run_shell", {"cmd": "read -r line; printf '%s' \"$line\"", "tty": True, "wait_ms": 0})
         self.assertTrue(result.ok, result.text)
         await asyncio.wait_for(self.host.before_model(self.memory, "role", noop), .5)
-        _, written = await self.tool("call_tool", {"name": "manage_shell_session", "args": {
-            "session_id": result.structured["session_id"], "action": "write", "text": "hello-role\n"}})
+        _, written = await self.tool("call_tool", {'name': 'write_shell_session', 'args': {'session_id': result.structured['session_id'], 'text': 'hello-role\n'}})
         self.assertTrue(written.ok, written.text)
         async def completion_ready():
             while not self.host.owner.shell._completions:
@@ -177,8 +176,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         _, result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
         sid = result.structured["session_id"]
         async def watch(wait_ms):
-            _, response = await self.tool("call_tool", {"name": "manage_shell_session", "args": {
-                "session_id": sid, "action": "watch", "wait_ms": wait_ms}})
+            _, response = await self.tool("call_tool", {'name': 'watch_shell_session', 'args': {'session_id': sid, 'wait_ms': wait_ms}})
             self.assertTrue(response.ok, response.text)
         async def ready():
             async with asyncio.timeout(5):
@@ -208,7 +206,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_shell_permission_does_not_grant_session_controls(self):
         scope = BunshinScopedExecutionRuntime(self.runtime, ["op_file_write"], {"invocation_id": "other"})
-        self.assertIsNone(scope.registry_generation.record_for_alias("manage_shell_session"))
+        self.assertIsNone(scope.registry_generation.record_for_alias("read_shell_session"))
 
     async def test_failed_terminal_delivery_keeps_output_for_read_retry(self):
         _, result = await self.tool("run_shell", {"cmd": "sleep .02; printf recovery", "wait_ms": 0})
@@ -223,7 +221,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(sid, self.host.owner.sessions)
         self.assertTrue(self.host.owner.pending)
         self.assertFalse(self.host.has_work)
-        _, recovered = await self.tool("call_tool", {"name": "manage_shell_session", "args": {"session_id": sid}})
+        _, recovered = await self.tool("call_tool", {'name': 'read_shell_session', 'args': {'session_id': sid}})
         self.assertIn("recovery", recovered.text)
         await asyncio.gather(*tuple(self.host.owner.observations.acking.values()))
         self.assertNotIn(sid, self.host.owner.sessions)
@@ -347,8 +345,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         core.publish_module_capabilities("execution")
         try:
             _, result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
-            read = await other.execute_tool_async(new_tool_call(name="call_tool", args={"name": "manage_shell_session", "args": {
-                "session_id": result.structured["session_id"]}}), turn_id="other")
+            read = await other.execute_tool_async(new_tool_call(name="call_tool", args={'name': 'read_shell_session', 'args': {'session_id': result.structured['session_id']}}), turn_id="other")
             self.assertFalse(read.ok)
             self.assertIn("invalid_session", read.llm_text)
         finally:
