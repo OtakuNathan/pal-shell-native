@@ -7,6 +7,8 @@ import subprocess
 import sys
 import unittest
 
+import pal.core  # Initialize the host before importing its execution extension.
+
 
 ROOT = Path(__file__).resolve().parents[2] / 'pal_plugin'
 
@@ -29,7 +31,10 @@ class DependencyTests(unittest.TestCase):
                     base = importlib.util.resolve_name('.' * node.level + (node.module or ''), package) if node.level else node.module
                     targets = [base, *(base + '.' + alias.name for alias in node.names)]
                 for target in targets:
-                    if name.startswith('pal_shell_contracts'):
+                    if (name.startswith('pal_shell_contracts')
+                            and target.split('.')[0] != 'pal_shell_contracts'):
+                        # Contract modules may share generated tables; all
+                        # dependencies outside this package remain stdlib-only.
                         self.assertIn(target.split('.')[0], sys.stdlib_module_names, (name, target))
                     if name.startswith('pal_shell_remote'):
                         self.assertFalse(target.startswith('pal_shell_native'), (name, target))
