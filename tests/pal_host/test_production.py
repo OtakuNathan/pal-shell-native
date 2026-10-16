@@ -564,8 +564,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
         sid = result.structured["session_id"]
         port = self.core.context.module_registry.require("execution").runtime_state_port
-        with self.assertRaises(RuntimeError):
-            port.snapshot_state()
+        payload = port.snapshot_state()
+        with self.assertRaisesRegex(RuntimeError, "Reset native shell sessions"):
+            port.prepare_restore_state(payload)
         await port.reset_state("soft_reset")
         stale = await self.session(sid)
         self.assertFalse(stale.ok)
@@ -590,7 +591,7 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("logical_execution", port.snapshot_state())
         self.assertTrue(self.owner.closed)
 
-    async def test_snapshot_rejects_foreground_before_session_handoff(self):
+    async def test_snapshot_allows_foreground_before_session_handoff(self):
         task = asyncio.create_task(self.tool("run_shell", {"cmd": "sleep 60"}))
         try:
             async def started():
@@ -599,12 +600,56 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(started(), 5)
             port = self.core.context.module_registry.require("execution").runtime_state_port
             self.assertFalse(self.owner.sessions)
-            with self.assertRaises(RuntimeError):
-                port.snapshot_state()
+            self.assertIn("logical_execution", port.snapshot_state())
+            self.assertTrue(self.owner.has_work)
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.assertFalse(self.owner.input_leases)
+
+    async def test_running_shell_does_not_block_resident_history_saves(self):
+        from pal.core.runtime_state import RuntimeSnapshotCoordinator, runtime_spec_hash
+        from pal.llm.ir import TextPartIR
+        from pal.memory.persistence.journal import ResidentJournalStore
+        from pal.memory.persistence.owner import ResidentHistory
+        from pal.memory.runtime_state import MemoryRuntimeStatePort
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.runtime.configure_runtime_root(root)
+            self.memory.begin_l1_turn("origin", user_text="keep this conversation")
+            result = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
+            self.assertTrue(result.ok, result.text)
+            sid = result.structured["session_id"]
+            registry = self.core.context.module_registry
+            history = ResidentHistory(root, self.core.context, self.core.state.diagnostics,
+                coordinator=RuntimeSnapshotCoordinator(registry),
+                spec_hash=lambda: runtime_spec_hash(registry))
+            self.assertTrue(await history.checkpoint_async("submission"), history.last_error)
+            sequence = history.store.sequence
+            self.memory.stream_l1_assistant("origin", LLMMessageIR(
+                role=MessageRole.ASSISTANT, parts=(TextPartIR("new reply while shell runs"),)))
+            self.assertTrue(await history.checkpoint_async("round"), history.last_error)
+            self.assertGreater(history.store.sequence, sequence)
+
+            saved = ResidentJournalStore(root).read()
+            recovered = MemoryService()
+            port = MemoryRuntimeStatePort(recovered)
+            port.install_prepared_state(port.prepare_restore_state(saved["modules"]["memory"]["payload"]))
+            self.assertEqual(recovered.history.turns[0].messages[-1].text, "new reply while shell runs")
+            self.assertTrue(self.owner.has_work)
+            self.assertIn(sid, self.owner.sessions)
+            self.assertEqual(self.owner.sessions[sid]["latest_status"], "running")
+
+    async def test_snapshot_allows_completed_shell_with_pending_output(self):
+        result = await self.tool("run_shell", {"cmd": "printf retained", "wait_ms": 0})
+        self.assertTrue(result.ok, result.text)
+        await self.wait_completion()
+        self.assertTrue(self.owner.has_work)
+        port = self.core.context.module_registry.require("execution").runtime_state_port
+        self.assertIn("logical_execution", port.snapshot_state())
+        self.assertTrue(self.owner.has_work)
+        self.assertTrue(self.owner.shell._completions)
 
     async def test_disk_full_delivery_keeps_original_output_for_export_retry(self):
         from unittest.mock import patch

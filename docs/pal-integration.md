@@ -51,6 +51,11 @@ calls to prevent detach without rejecting nested execution. Native state
 changes still run on the Runtime's reactor, and session controls keep their
 existing synchronization.
 
+Resident recovery checkpoints also remain writable while shell commands run or
+output awaits delivery. The execution snapshot contains logical file/session
+state, not live native process handles. Restoring over active native work still
+requires an explicit reset; saving a checkpoint does not stop or consume it.
+
 Running shell results tell the agent to avoid modifying the command's input files
 or concurrently writing the same output locations. Changed inputs may require
 verification again. This policy also applies to classified verification; recording

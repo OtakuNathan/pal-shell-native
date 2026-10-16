@@ -7,8 +7,9 @@ class NativeExecutionStatePort(ExecutionRuntimeStatePort):
         return owner.has_work
 
     def snapshot_state(self):
-        if self._has_native_work():
-            raise RuntimeError("Consume or terminate native shell sessions before snapshotting runtime state.")
+        # Persist logical execution state even while native processes or
+        # undelivered output remain live. Native process handles are not part
+        # of this payload and cannot gate the resident conversation journal.
         return super().snapshot_state()
 
     def prepare_restore_state(self, payload):
