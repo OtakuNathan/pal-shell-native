@@ -488,7 +488,10 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         if target not in (None, 0):
             items = []
         if owner.remote_port is not None and target != 0:
-            items.extend(await owner.remote_port.list(call.args.get("refresh", False), target=target))
+            if owner._shell is not None:
+                items.extend(await owner.shell.list_targets(call.args.get("refresh", False), target=target))
+            else:
+                items.extend(await owner.remote_port.list(call.args.get("refresh", False), target=target))
         if target is not None and not items:
             raise ToolRejectedError("Target is not configured", error_code="invalid_target")
         view = call.args.get("view", "summary")

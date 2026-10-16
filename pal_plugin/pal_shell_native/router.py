@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from .adapter import ShellRuntime, ShellRejected, Completion, TERMINAL
 from pal_shell_contracts import RemoteFailure
+from pal_shell_contracts.remote_lifecycle import can_adopt, poll_decision, snapshot_is_older
 from .recovery import LOGGER
 
 
@@ -30,6 +31,7 @@ class Ticket:
     output_id: str = ''
     public_id: int = 0
     kind: str = 'execution'
+    latest_result: dict | None = None
 
 
 class ShellRouter(ShellRuntime):
@@ -50,6 +52,9 @@ class ShellRouter(ShellRuntime):
         self.remote_foreground = set()
         self.operation_context = {}
         self.observation_support = {}
+        self.worker_epochs = {}
+        self.retired_worker_epochs = {}
+        self.rpc_sequence = itertools.count(1)
 
     async def observe(self, session_id):
         """Best-effort background read; never allocate a control operation."""
@@ -92,11 +97,46 @@ class ShellRouter(ShellRuntime):
             raise RemoteFailure('backend_unavailable', 'Remote plugin unavailable; attach it to access retained tickets')
         return self.owner.remote_port
 
-    async def _rpc(self, ticket, method, params):
+    def _observe_worker_epoch(self, target, epoch, sequence):
+        observed = self.worker_epochs.get(target)
+        retired = self.retired_worker_epochs.setdefault(target, set())
+        if epoch not in retired and (observed is None or observed[1] is None or sequence >= observed[0]):
+            if observed and observed[1] is not None and observed[1] != epoch:
+                retired.add(observed[1])
+            self.worker_epochs[target] = (max(sequence, observed[0] if observed else 0), epoch)
+
+    async def list_targets(self, refresh=False, *, target=None):
+        sequence = next(self.rpc_sequence)
         port = self._port()
-        result = await port.request(ticket.target, method, params, ticket.epoch or None)
+        items = await port.list(refresh, target=target)
+        if port is not self.owner.remote_port:
+            raise RemoteFailure('backend_unavailable', 'Remote plugin changed during target inspection')
+        for item in items:
+            epoch = (item.get('dynamic') or {}).get('runtime_epoch')
+            if item.get('reachable') is True and epoch:
+                self._observe_worker_epoch(item['target'], epoch, sequence)
+        return items
+
+    async def _rpc(self, ticket, method, params):
+        sequence = next(self.rpc_sequence)
+        try:
+            port = self._port()
+            result = await port.request(ticket.target, method, params, ticket.epoch or None)
+        except RemoteFailure as exc:
+            observed = self.worker_epochs.get(ticket.target)
+            if exc.code == 'runtime_changed' and (observed is None or observed[1] in {None, ticket.epoch}):
+                self.retired_worker_epochs.setdefault(ticket.target, set()).add(ticket.epoch)
+                self.worker_epochs[ticket.target] = (max(sequence, observed[0] if observed else 0), None)
+            # A read's NOT_STARTED describes only that read, never the command
+            # whose receipt/output we are fetching. Preserve its recovery ticket.
+            if (method == 'query' and exc.effect == 'not_started') or method == 'output':
+                raise RemoteFailure(exc.code, str(exc), operation_id=ticket.operation_id,
+                                    effect='applied' if method == 'output' else 'unknown') from exc
+            raise
         if self._closed or self.owner.closed or port is not self.owner.remote_port:
             raise RemoteFailure('backend_unavailable', 'Remote plugin changed while awaiting response', effect='unknown')
+        if method == 'metadata' and result.get('runtime_epoch'):
+            self._observe_worker_epoch(ticket.target, result['runtime_epoch'], sequence)
         return result
 
     def resume(self):
@@ -105,8 +145,25 @@ class ShellRouter(ShellRuntime):
 
     def _adopt(self, ticket, result):
         result = dict(result)
-        if ticket.epoch and result['runtime_epoch'] != ticket.epoch:
+        observed = self.worker_epochs.get(ticket.target)
+        same_epoch = ((not ticket.epoch or result['runtime_epoch'] == ticket.epoch)
+                      and (observed is None or observed[1] == result['runtime_epoch']))
+        if not same_epoch:
             raise RemoteFailure('runtime_changed', 'Remote result belongs to another Runtime', effect='unknown')
+        if not can_adopt(ticket.operation_id in self.operations,
+                         ticket.public_id in self._consumed,
+                         same_epoch):
+            # A concurrent output acknowledgment can win against a read/control
+            # reply. Settle that control without recreating the retired session.
+            if self.operation_context.get(ticket.operation_id, {}).get('control'):
+                self.operations.pop(ticket.operation_id, None)
+                self.operation_context.pop(ticket.operation_id, None)
+            raise RemoteFailure('output_released', 'Session output was released while awaiting this response', effect='applied')
+        current = self.tickets.get(ticket.public_id)
+        previous = (current.latest_result if current else None) or ticket.latest_result
+        if previous and snapshot_is_older(result, previous):
+            result = dict(previous)
+        ticket.latest_result = dict(result)
         ticket.epoch = result['runtime_epoch']
         self.operation_context.setdefault(ticket.operation_id, {}).update(
             resolved=True, latest_status=result['status'])
@@ -241,6 +298,7 @@ class ShellRouter(ShellRuntime):
         ticket = Ticket(target, '', uuid4().hex, kwargs.get('turn_id', ''), kind=action if action == 'shutdown' else 'execution')
         self.operations[ticket.operation_id] = ticket
         self._capture_context(ticket, cmd, False, delivery_context)
+        self.operation_context[ticket.operation_id].update(privileged=True, signed=False)
         task = asyncio.current_task()
         self.remote_foreground.add(task)
         submitted = False
@@ -263,6 +321,7 @@ class ShellRouter(ShellRuntime):
             if port is not self.owner.remote_port:
                 raise RemoteFailure('backend_unavailable', 'Approval belongs to the detached plugin generation')
             submitted = True
+            self.operation_context[ticket.operation_id]['signed'] = True
             response = await port.call('approve', {'target': target, 'action': action, 'approval': prepared['approval']})
             if action == 'shutdown':
                 if response['state'] == 'pending':
@@ -330,7 +389,10 @@ class ShellRouter(ShellRuntime):
                 state = 'running' if ticket.native_id and state not in TERMINAL else 'unknown'
             records.append(dict(operation_id=ticket.operation_id, epoch=ticket.epoch,
                 state=state, session_id=ticket.native_id, output_id=ticket.output_id,
-                hold_output=self.owner.require_output_delivery, control=bool(context.get('control'))))
+                hold_output=self.owner.require_output_delivery, control=bool(context.get('control')),
+                kind=('control' if context.get('control') else 'shutdown' if ticket.kind == 'shutdown'
+                      else 'privileged' if context.get('privileged') else 'execution'),
+                **({'unsigned': not context.get('signed')} if context.get('privileged') else {})))
         return records
 
     async def sync_target(self, target):
@@ -466,18 +528,32 @@ class ShellRouter(ShellRuntime):
 
     async def _poll_target(self, target, epoch):
         while not self._closed and self.owner.remote_port:
-            ticket = next((t for t in self.tickets.values() if (t.target, t.epoch) == (target, epoch)), None)
+            ticket = next((t for t in self.operations.values() if (t.target, t.epoch) == (target, epoch)), None)
             if ticket is None:
                 return
             try:
                 response = await self._rpc(ticket, 'events', {'after': self.cursors.get((target, epoch), 0), 'wait_ms': 0})
                 for event in response['events']:
                     result = event['result']
-                    owner = next((t for t in self.tickets.values() if t.target == target and t.epoch == epoch and t.native_id == result['session_id']), None)
-                    if owner is None:
-                        break  # Keep cursor before an unadopted completion.
+                    execution_id = result.get('execution_id')
+                    owner = self.operations.get(execution_id) if execution_id else next((
+                        t for t in self.operations.values() if t.target == target and t.epoch == epoch
+                        and result['session_id'] and t.native_id == result['session_id']
+                        and not self.operation_context.get(t.operation_id, {}).get('control')), None)
+                    if owner and ((owner.target, owner.epoch) != (target, epoch)
+                                  or self.operation_context.get(owner.operation_id, {}).get('control')):
+                        owner = None
+                    decision = poll_decision(owner is not None, bool(execution_id))
+                    if decision == 'defer':
+                        break  # Native ownership may still be getting assigned.
+                    if decision == 'skip':
+                        # All Pal tickets exist before submission. An event for
+                        # an unowned execution must not starve later owned ones.
+                        self.cursors[(target, epoch)] = event['cursor']
+                        continue
                     adopted = self._adopt(owner, result)
-                    observed = self.owner.sessions.get(owner.public_id, {})
+                    observed = self.owner.sessions.setdefault(owner.public_id,
+                        dict(self.operation_context.get(owner.operation_id, {})))
                     observed['latest_status'] = adopted['status']
                     if (owner.public_id not in self._consumed
                         and (adopted['status'] in TERMINAL or (adopted.get('watching', True)
@@ -494,6 +570,10 @@ class ShellRouter(ShellRuntime):
         try:
             while not self._closed and self.owner.remote_port and self.remote_work:
                 groups = {(t.target, t.epoch) for t in self.tickets.values()}
+                groups.update((t.target, t.epoch) for t in self.operations.values()
+                    if t.epoch and t.kind == 'execution'
+                    and self.operation_context.get(t.operation_id, {}).get('submitted')
+                    and not self.operation_context.get(t.operation_id, {}).get('control'))
                 for key in groups:
                     if key not in self.poll_targets or self.poll_targets[key].done():
                         self.poll_targets[key] = self.loop.create_task(self._poll_target(*key))

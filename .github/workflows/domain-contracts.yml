@@ -7,6 +7,31 @@ on:
 permissions:
   contents: read
 jobs:
+  remote-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Fetch pinned TLC
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            --output "$RUNNER_TEMP/tla2tools.jar"
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check
+      - name: Check models, counterexamples and generated runtime reducer
+        run: python scripts/check_remote_tla.py "$RUNNER_TEMP/tla2tools.jar" --output-dir "$RUNNER_TEMP/remote-models"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remote-model-checks
+          path: ${{ runner.temp }}/remote-models/*.*
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -15,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: 364f898f30f5f192f1c552b39144bc1c098a7559
+          ref: 5517d4040011834fa09dde8d9e7ed9b17612768f
           path: .pal-host
       - uses: actions/setup-python@v5
         with:
@@ -27,3 +52,7 @@ jobs:
       - run: python -m pytest -q tests/pal_host
         env:
           PYTHONPATH: ${{ github.workspace }}/.pal-host/src:${{ github.workspace }}/pal_plugin:${{ github.workspace }}/tests/pal_host_support
+      - name: Remote reducer conformance and RPC boundaries
+        run: python -m pytest -q tests/test_remote_formal.py tests/test_execution_gate.py tests/test_remote_admission.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.pal-host/src:${{ github.workspace }}/pal_plugin

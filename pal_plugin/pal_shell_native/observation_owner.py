@@ -20,6 +20,7 @@ from pal.execution.tool_facade import CompleteResult
 from .adapter import Completion, TERMINAL
 from .recovery import retry_read, exception_report, LOGGER
 from .observations import event_metadata, observation_is_current, output_since
+from pal_shell_contracts.remote_lifecycle import snapshot_is_older
 
 NAMESPACE = 'pal_shell_native'
 
@@ -75,11 +76,7 @@ class ObservationOwner:
         if not sid or sid not in self.owner.sessions:
             return
         previous = self.latest.get(sid)
-        if previous and (raw.get('watch_generation', 0) < previous.raw.get('watch_generation', 0)
-                         or raw.get('event_sequence', 0) < previous.raw.get('event_sequence', 0)
-                         or previous.raw['status'] in TERMINAL and raw['status'] not in TERMINAL
-                         or any(raw.get(stream + '_total', 0) < previous.raw.get(stream + '_total', 0)
-                                for stream in ('stdout', 'stderr'))):
+        if previous and snapshot_is_older(raw, previous.raw):
             return
         state = semantic_state(raw)
         changed = previous is None or previous.state != state

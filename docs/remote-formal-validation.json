@@ -1,0 +1,154 @@
+{
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "model_sha256": {
+    "spec/remote/ExportRemoteOperation.cfg": "41d15a4d5bef6385c00b30f2126204e74a779d835d37f1ea73669afcfb579ef5",
+    "spec/remote/ExportRemoteOperation.tla": "8d0bc032768b2223648daa724696ab916bec10e6c3e0014778461d89b6a84807",
+    "spec/remote/RemoteApprovalUnsafe.cfg": "8c0a2e8336407e90f8356418d752cbfea3eb7586b18cea81c7a9353221bc1b5a",
+    "spec/remote/RemoteConcurrencyWitness.cfg": "4bb82a6d2265ef5696afb18391dee9693654de15785197593ff069653cdb0446",
+    "spec/remote/RemoteControlUnsafe.cfg": "e3585d14d3a19446ce307e0f088814efe45a398c5a0638db067b785778fdcc8f",
+    "spec/remote/RemoteEpoch.cfg": "a6f87bfa5c6b1272a5761ab0a0d70e12c1639c5f84423c6e7817d9e3ccf84b1f",
+    "spec/remote/RemoteEventDelivery.cfg": "49613b33a5e2961f2ec4ffe69dfb8317222e7dcbb8bcec0fb5df5bc4e1c23d8c",
+    "spec/remote/RemoteEventDelivery.tla": "648af38f22e1e200688e0bd7f985bb553977cbedd0bbce59a88304fe7238624f",
+    "spec/remote/RemoteExecution.cfg": "099e79b36ec893d7a2076dcebc8dc4e707ecda312c465ad84dcdfa4cff870871",
+    "spec/remote/RemoteExecution.tla": "1018dea87224bec9a7e1b53b9ec5fbc079c144b9ab011c0c352aa0c0889cd2c2",
+    "spec/remote/RemoteHeadBlockUnsafe.cfg": "2aac9c57929ea9447f7fa486e87a1b2fd2c2bd998390abbff5b515e3cf9122cb",
+    "spec/remote/RemoteOperation.tla": "b9b85d513400a39aeee024ade12f590e84b1b78b1273a9d066765c1930048ac3",
+    "spec/remote/RemoteParallel.cfg": "82f0f19c350351653cd8ba2dbeb3131a8b88099795211631839f709669a80569",
+    "spec/remote/RemotePrivilege.cfg": "533ab20015c19cf2cd868e4c71186d4ebe3db05dda29e362180c92726177d242",
+    "spec/remote/RemoteRegressionUnsafe.cfg": "9bd5e3780db58304af0938db11f4fdb321cc6b343842be081e1cbee0aa083bad",
+    "spec/remote/RemoteRestoreUnsafe.cfg": "2659bd5b25f7463a767cf684336e21b45e76e8f82a1851e497b44731fbfbbb03",
+    "spec/remote/RemoteResurrectionUnsafe.cfg": "ee39b9cfa84d397b9fa3699553574435052cbf04121d0a5ce958cdf3329487ae",
+    "spec/remote/RemoteSettlementWitness.cfg": "4c148ba2ade71163e3187878ce2c296660a4e116c503fa4d0a06284f11ebb1a4",
+    "spec/remote/RemoteShutdown.cfg": "0d802f60079e766d29e8d9e7c2ad2e8baed344562ace530a4bb1c6ba1ffcc26a"
+  },
+  "runtime_table_matches": true,
+  "checks": [
+    {
+      "config": "RemoteExecution",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 36966,
+      "distinct": 3319
+    },
+    {
+      "config": "RemoteParallel",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 58227,
+      "distinct": 4525
+    },
+    {
+      "config": "RemoteEpoch",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 961,
+      "distinct": 169
+    },
+    {
+      "config": "RemotePrivilege",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 1711,
+      "distinct": 276
+    },
+    {
+      "config": "RemoteShutdown",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 1106,
+      "distinct": 211
+    },
+    {
+      "config": "RemoteEventDelivery",
+      "passed": true,
+      "expected_counterexample": null,
+      "returncode": 0,
+      "kind": "positive",
+      "generated": 67,
+      "distinct": 22
+    },
+    {
+      "config": "RemoteRestoreUnsafe",
+      "passed": true,
+      "expected_counterexample": "NoResurrection",
+      "returncode": 12,
+      "kind": "negative",
+      "generated": 143,
+      "distinct": 49
+    },
+    {
+      "config": "RemoteApprovalUnsafe",
+      "passed": true,
+      "expected_counterexample": "NoSignedRegression",
+      "returncode": 12,
+      "kind": "negative",
+      "generated": 44,
+      "distinct": 22
+    },
+    {
+      "config": "RemoteControlUnsafe",
+      "passed": true,
+      "expected_counterexample": "ControlNeedsOwnReceipt",
+      "returncode": 12,
+      "kind": "negative",
+      "generated": 7133,
+      "distinct": 1288
+    },
+    {
+      "config": "RemoteResurrectionUnsafe",
+      "passed": true,
+      "expected_counterexample": "NoResurrection",
+      "returncode": 12,
+      "kind": "negative",
+      "generated": 41,
+      "distinct": 19
+    },
+    {
+      "config": "RemoteRegressionUnsafe",
+      "passed": true,
+      "expected_counterexample": "NoRegression",
+      "returncode": 12,
+      "kind": "negative",
+      "generated": 19,
+      "distinct": 13
+    },
+    {
+      "config": "RemoteHeadBlockUnsafe",
+      "passed": true,
+      "expected_counterexample": "temporal",
+      "returncode": 13,
+      "kind": "negative",
+      "generated": 26,
+      "distinct": 8
+    },
+    {
+      "config": "RemoteSettlementWitness",
+      "passed": true,
+      "expected_counterexample": "NoSettlementWitness",
+      "returncode": 12,
+      "kind": "witness",
+      "generated": 304,
+      "distinct": 82
+    },
+    {
+      "config": "RemoteConcurrencyWitness",
+      "passed": true,
+      "expected_counterexample": "NoConcurrencyWitness",
+      "returncode": 12,
+      "kind": "witness",
+      "generated": 2382,
+      "distinct": 543
+    }
+  ],
+  "runtime_table_sha256": "98d281fa7deb31b5c821c0767cb7067922330ad08347866861db1684dd411f2f"
+}

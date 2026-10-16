@@ -501,6 +501,213 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('shell_reconcile', result.text)
         self.assertEqual(count.read_text(), 'one\n')
 
+    async def test_unowned_completion_does_not_starve_owned_session_events(self):
+        await self.worker.handle('submit', {'operation_id': 'outside-pal',
+            'cmd': 'printf unrelated', 'wait_ms': 0})
+        async with asyncio.timeout(3):
+            while not self.worker.events:
+                await asyncio.sleep(.001)
+        started = await self.tool('run_shell', target=1, cmd='sleep .1; printf owned', wait_ms=0)
+        self.assertTrue(started.ok, started.text)
+        sid = started.structured['session_id']
+        async with asyncio.timeout(3):
+            while sid not in self.owner.shell.remote_completions:
+                await asyncio.sleep(.01)
+        self.assertEqual(self.owner.shell.remote_completions[sid].result['status'], 'exited')
+        self.assertIn('outside-pal', self.worker.operations)
+
+    async def test_event_recovers_unadopted_execution_without_confirming_unknown_control(self):
+        shell = self.owner.shell
+        original = self.port.request
+        async def lose(target, method, params, epoch=None):
+            result = await original(target, method, params, epoch)
+            if method == 'submit':
+                raise RemoteFailure('transport_lost', 'Lost submit response', effect='unknown')
+            return result
+        self.port.request = lose
+        count = self.path / 'event-recovery-count'
+        with self.assertRaises(RemoteFailure) as caught:
+            await shell.run(f'echo once >> {count}; sleep .1; printf recovered', target=1, wait_ms=0)
+        oid = caught.exception.operation_id
+        ticket = shell.operations[oid]
+        self.assertFalse(ticket.native_id)
+        async with asyncio.timeout(3):
+            while not ticket.native_id:
+                await asyncio.sleep(.01)
+        self.assertEqual(count.read_text(), 'once\n')
+        self.assertEqual(self.owner.sessions[ticket.public_id]['latest_status'], 'exited')
+        self.assertEqual(shell.remote_completions[ticket.public_id].result['status'], 'exited')
+        self.assertFalse(self.owner.sessions[ticket.public_id]['committed'])
+        # The event confirms only its execution, never an uncertain write on
+        # that same session, even if a control ticket is the latest alias.
+        from pal_shell_native.router import Ticket
+        control = Ticket(ticket.target, ticket.epoch, 'unknown-control', ticket.origin_turn,
+                         ticket.native_id, ticket.output_id, ticket.public_id)
+        shell.operations[control.operation_id] = control
+        shell.operation_context[control.operation_id] = {'control': True, 'submitted': True, 'resolved': False}
+        shell.tickets[ticket.public_id] = control
+        shell.cursors.clear()
+        async with asyncio.timeout(3):
+            while not shell.cursors:
+                await asyncio.sleep(.01)
+        self.assertFalse(shell.operation_context[control.operation_id]['resolved'])
+        self.assertTrue(next(r for r in shell.execution_records(1)
+                             if r['operation_id'] == control.operation_id)['control'])
+        await shell.release_output(shell.remote_completions[ticket.public_id].result)
+        self.assertIn(control.operation_id, shell.operations)
+
+    async def test_late_running_receipt_cannot_replace_latest_terminal_snapshot(self):
+        shell = self.owner.shell
+        raw = await shell.run('sleep .05; printf final', target=1, wait_ms=0, load_output=False)
+        ticket = shell.tickets[raw['session_id']]
+        old = self.worker.operations[ticket.operation_id].result
+        async with asyncio.timeout(3):
+            while not self.worker.events:
+                await asyncio.sleep(.001)
+        terminal = next(e['result'] for e in self.worker.events.values()
+                        if e['result']['execution_id'] == ticket.operation_id)
+        shell._adopt(ticket, terminal)
+        result = shell._adopt(ticket, old)
+        self.assertEqual(result['status'], 'exited')
+        loaded = await shell.materialize(result)
+        self.assertEqual(loaded['stdout'], 'final')
+        await shell.release_output(result)
+
+    async def test_late_read_receipt_after_release_cannot_resurrect_session(self):
+        shell = self.owner.shell
+        raw = await shell.run('sleep .05; printf final', target=1, wait_ms=0, load_output=False)
+        sid = raw['session_id']
+        async with asyncio.timeout(3):
+            while not self.worker.events:
+                await asyncio.sleep(.001)
+        original = self.port.request
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        async def hold_query(target, method, params, epoch=None):
+            result = await original(target, method, params, epoch)
+            if method == 'query':
+                entered.set()
+                await proceed.wait()
+            return result
+        self.port.request = hold_query
+        read = asyncio.create_task(shell.session_snapshot(sid))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            await shell.release_output(raw)
+            proceed.set()
+            with self.assertRaises(RemoteFailure) as caught:
+                await read
+            self.assertEqual(caught.exception.code, 'output_released')
+            self.assertNotIn(sid, shell.tickets)
+            self.assertFalse(shell.operations)
+        finally:
+            proceed.set()
+            await asyncio.gather(read, return_exceptions=True)
+
+    async def test_old_read_receipt_cannot_override_an_observed_worker_restart(self):
+        await self._check_old_read_after_restart(inspect_only=False)
+
+    async def test_fresh_target_inspection_also_fences_old_read_receipts(self):
+        await self._check_old_read_after_restart(inspect_only=True)
+
+    async def _check_old_read_after_restart(self, *, inspect_only):
+        shell = self.owner.shell
+        raw = await shell.run('sleep 30', target=1, wait_ms=0, load_output=False)
+        sid = raw['session_id']
+        original = self.port.request
+        entered, proceed = asyncio.Event(), asyncio.Event()
+        async def hold_query(target, method, params, epoch=None):
+            result = await original(target, method, params, epoch)
+            if method == 'query' and epoch == raw['runtime_epoch']:
+                entered.set()
+                await proceed.wait()
+            return result
+        self.port.request = hold_query
+        read = asyncio.create_task(shell.session_snapshot(sid))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            config = self.worker.config
+            await self.worker.close()
+            self.worker = await Worker(config).start()
+            fresh = None
+            if inspect_only:
+                listed = await self.tool('call_tool', name='list_remote', args={'target': 1, 'refresh': True})
+                self.assertTrue(listed.ok, listed.text)
+            else:
+                fresh = await shell.run('printf new-epoch', target=1, load_output=False)
+            self.assertNotEqual(self.worker.epoch, raw['runtime_epoch'])
+            proceed.set()
+            with self.assertRaises(RemoteFailure) as caught:
+                await read
+            self.assertEqual(caught.exception.code, 'runtime_changed')
+            self.assertEqual(shell.worker_epochs[1][1], self.worker.epoch)
+            if fresh:
+                await shell.release_output(fresh)
+        finally:
+            proceed.set()
+            await asyncio.gather(read, return_exceptions=True)
+
+    async def test_failed_query_keeps_original_submission_for_reconciliation(self):
+        original = self.port.request
+        failed = False
+        async def fail_query(target, method, params, epoch=None):
+            nonlocal failed
+            if method == 'query' and not failed:
+                failed = True
+                raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
+            return await original(target, method, params, epoch)
+        self.port.request = fail_query
+        count = self.path / 'query-count'
+        with self.assertRaises(RemoteFailure) as caught:
+            await self.owner.shell.run(f'echo once >> {count}; printf retained', target=1)
+        self.assertEqual(caught.exception.effect, 'unknown')
+        oid = caught.exception.operation_id
+        self.assertIn(oid, self.owner.shell.operations)
+        await asyncio.wait_for(self.worker.operations[oid].done.wait(), 3)
+        recovered = await self.owner.shell.reconcile(oid)
+        loaded = await self.owner.shell.materialize(recovered)
+        self.assertEqual(loaded['stdout'], 'retained')
+        self.assertEqual(count.read_text(), 'once\n')
+        await self.owner.shell.release_output(recovered)
+
+    async def test_output_read_failure_keeps_confirmed_execution_and_retained_output(self):
+        original = self.port.request
+        async def fail_output(target, method, params, epoch=None):
+            if method == 'output':
+                raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
+            return await original(target, method, params, epoch)
+        self.port.request = fail_output
+        count = self.path / 'output-count'
+        with self.assertRaises(RemoteFailure) as caught:
+            await self.owner.shell.run(f'echo once >> {count}; printf retained', target=1)
+        self.assertEqual(caught.exception.effect, 'applied')
+        oid = caught.exception.operation_id
+        self.assertIn(oid, self.owner.shell.operations)
+        self.port.request = original
+        recovered = await self.owner.shell.reconcile(oid)
+        loaded = await self.owner.shell.materialize(recovered)
+        self.assertEqual(loaded['stdout'], 'retained')
+        self.assertEqual(count.read_text(), 'once\n')
+        await self.owner.shell.release_output(recovered)
+
+    async def test_tool_recovers_failed_query_without_replaying_command(self):
+        original = self.port.request
+        failed = False
+        async def fail_query(target, method, params, epoch=None):
+            nonlocal failed
+            if method == 'query' and not failed:
+                failed = True
+                raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
+            return await original(target, method, params, epoch)
+        self.port.request = fail_query
+        count = self.path / 'tool-query-count'
+        result = await self.tool('run_shell', target=1, cmd=f'echo once >> {count}; printf recovered')
+        self.assertTrue(result.ok, result.text)
+        self.assertIn('recovered', result.text)
+        self.assertEqual(count.read_text(), 'once\n')
+        await asyncio.gather(*tuple(self.owner.observations.acking.values()))
+        self.assertFalse(self.worker.outputs)
+        self.assertFalse(self.hub.slots[1].execution.operations)
+
     async def test_local_output_capacity_failure_is_honest_and_never_reexecutes(self):
         from unittest.mock import patch
         count = self.path / 'capacity-count'

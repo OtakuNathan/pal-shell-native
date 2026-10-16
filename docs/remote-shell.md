@@ -94,13 +94,40 @@ before reaching the new Runtime. Unknown operations remain tracked even after
 restart and must not be replayed; independent commands can still execute.
 
 Local and remote sessions can execute concurrently, including multiple commands
-on the same target. Each slot retains its running, submitting, approval and UNKNOWN
+on the same target. Each slot retains its running, submitting, pending, approval and UNKNOWN
 operations without using them as a target-wide write barrier. Same-session mutations
 do not overlap; an unknown control must be reconciled before further mutations of
 that session. Reads, termination and reconciliation remain possible. Strict output
 delivery retains each operation until output acknowledgment without excluding new
 execution. Host tickets restore these records before a replacement Hub accepts new
-execution. Slow output transfers and completion polling on one target
+execution. A worker `pending` receipt advances a claim out of `submitting` even
+before session/output IDs exist. Replaced-Hub `submitting` records become UNKNOWN;
+restore never replaces newer evidence already owned by that Hub. Query the original
+operation ID to reconcile without resubmitting the command. A failed query makes
+an unconfirmed submission UNKNOWN while preserving already known session/output
+evidence; a NOT_STARTED error for that read does not prove the original command
+never started. Same-epoch worker events also carry `execution_id`,
+which can bind a lost submit receipt to its real session/output and permit normal
+output acknowledgment. A session event cannot confirm an unrelated unknown control.
+The resident router also preserves the original ticket on query transport failure
+and treats output-download failures as failures reading an already applied command.
+A rejected duplicate submission cannot discard a pre-existing claim. Session
+controls cannot replace a claim from another epoch or session, and repeating
+privilege preparation cannot make a signed operation eligible for unsigned cleanup.
+Connection identity is bound before sending a mutation, so an early completion
+event can correlate even before the first RPC receipt. Confirmed completion and
+output identity cannot be rolled back by late running/pending receipts or failed
+reads. Concurrent requests for the same operation ID are rejected locally and
+reconciled by querying that ID. An accepted shutdown has no output lease to retain.
+The resident event poller can associate an unadopted execution by its original ID,
+without resolving unrelated uncertain controls. Unowned execution events advance
+the cursor without releasing their output or blocking notifications for owned
+sessions. A late receipt after output retirement cannot recreate a consumed session.
+The operation phases and host adoption guards follow the normative TLA reducer in
+spec/remote/RemoteOperation.tla. The runtime imports its TLC-exported transition
+table; CI checks safety/liveness, expected counterexamples, and table freshness.
+See remote-state-machine.md for the state inventory and refinement boundaries.
+Slow output transfers and completion polling on one target
 do not serialize other targets. This version deliberately has no
 force-forget operation for lost effects and no recovery across a Pal process
 restart. An operator must reconcile effects before replacing that resident state.

@@ -12,7 +12,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 PERMANENT = frozenset({'invalid_output', 'output_capacity', 'runtime_changed',
-                       'authorization_required', 'invalid_operation', 'invalid_session'})
+                       'authorization_required', 'invalid_operation', 'invalid_session', 'output_released'})
 
 
 def exception_report(exc):

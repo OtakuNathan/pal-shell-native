@@ -30,6 +30,7 @@ class RemoteSlot:
         self.execution = ExecutionGate(config.target)
         self.previous_epoch = None
         self.session_locks = {}
+        self.operation_requests = set()
         self.config = config
         self.lock = asyncio.Lock()
         self.admission = RequestAdmission()
@@ -162,10 +163,8 @@ class RemoteSlot:
         if self.epoch and self.epoch != connection.epoch:
             self.previous_epoch = self.epoch
             self.cached = None
-            for item in self.execution.operations.values():
-                if item.get('epoch') == self.epoch:
-                    item['state'] = 'unknown'
         self.epoch = connection.epoch
+        self.execution.connected(connection.epoch)
         self.lease = FdLease('remote_rpc', connection, capacity=32, closer_async=close_connection,
                              hard_closer_async=close_connection, close_drain_timeout=5)
 
@@ -174,41 +173,50 @@ class RemoteSlot:
         hold = params.pop('_hold_output', False)
         oid = params.get('operation_id', '')
         claim = method in {'submit', 'prepare_privileged'}
-        if claim:
-            self.execution.claim(oid, epoch or self.epoch, hold)
-            if method == 'prepare_privileged':
-                self.execution.operations[oid]['unsigned'] = True
-        if method == 'commit_privileged' and oid in self.execution.operations:
-            self.execution.operations[oid]['unsigned'] = False
         lock = None
+        acquired = False
         control_epoch = epoch or self.epoch
-        if method == 'session' and params.get('action') not in {'read', 'release', 'terminate'}:
-            if any(item['state'] == 'unknown' and item.get('epoch') == control_epoch
-                   and item.get('session_id') == params['session_id']
-                   for item in self.execution.operations.values()):
-                raise RemoteError('target_busy', 'Reconcile unknown operations for this session before another mutation')
-        if method == 'session' and params.get('action') != 'read':
-            session_key = (control_epoch, params['session_id'])
-            lock = self.session_locks.setdefault(session_key, asyncio.Lock())
-            if lock.locked():
-                raise RemoteError('target_busy', f'Target {self.config.target} session control is busy')
-            await lock.acquire()
         control = method == 'session' and params.get('action') not in {'read', 'release'}
-        if control:
-            self.execution.operations[oid] = dict(operation_id=oid, epoch=control_epoch, state='submitting',
-                session_id=params['session_id'], output_id='', hold_output=False, control=True)
+        # Only a new claim or the first signing attempt owns failure cleanup;
+        # rejecting a retry says nothing about an earlier attempt's effects.
+        tracked = False
         admitted = False
+        owns_request = False
         try:
+            if claim or method in {'session', 'commit_privileged'}:
+                if oid in self.operation_requests:
+                    raise RemoteError('target_busy', 'This operation request is still in flight; query its original ID',
+                                      effect='unknown', operation_id=oid)
+                self.operation_requests.add(oid)
+                owns_request = True
+            if claim:
+                kind = ('execution' if method == 'submit' else
+                        'shutdown' if params.get('action') == 'shutdown' else 'privileged')
+                tracked = self.execution.claim(oid, epoch or self.epoch, hold, kind=kind)
+            if method == 'commit_privileged':
+                tracked = self.execution.sign(oid, epoch or self.epoch)
+            if method == 'session' and params.get('action') not in {'read', 'release', 'terminate'}:
+                if any((item['state'] == 'unknown' or
+                        (item.get('control') and item['state'] in {'submitting', 'pending'}))
+                       and item.get('epoch') == control_epoch
+                       and item.get('session_id') == params['session_id']
+                       for item in self.execution.operations.values()):
+                    raise RemoteError('target_busy', 'Reconcile pending or unknown controls for this session before another mutation')
+            if method == 'session' and params.get('action') != 'read':
+                session_key = (control_epoch, params['session_id'])
+                lock = self.session_locks.setdefault(session_key, asyncio.Lock())
+                if lock.locked():
+                    raise RemoteError('target_busy', f'Target {self.config.target} session control is busy')
+                await lock.acquire()
+                acquired = True
+            if control:
+                tracked = self.execution.claim_control(oid, control_epoch, params['session_id'])
             async with self.admission.permit():
                 admitted = True
                 result = await self._request(method, params, epoch)
-            if method == 'prepare_privileged' and oid in self.execution.operations:
-                self.execution.operations[oid]['state'] = 'awaiting_approval'
             self.execution.result(oid, result, epoch or self.epoch)
             if method == 'query' and result.get('state') == 'approval_required':
-                self.execution.operations.pop(oid, None)
-            if control and result.get('state') == 'complete' and not result.get('error'):
-                self.execution.operations.pop(oid, None)
+                self.execution.reconcile_prepared(oid, epoch or self.epoch)
             if method in {'session', 'observe'}:
                 self.execution.snapshot(result.get('result') or result, epoch or self.epoch)
             if method == 'events':
@@ -218,15 +226,23 @@ class RemoteSlot:
                 self.execution.release(params['output_id'], epoch or self.epoch)
             return result
         except RemoteError as exc:
-            if claim or control or method == 'commit_privileged':
-                self.execution.failed(oid, exc.effect)
+            if method == 'query':
+                # NOT_STARTED here describes the read, not the original
+                # mutation. Failed reconciliation can never erase its claim.
+                self.execution.query_failed(oid, epoch or self.epoch)
+            elif tracked:
+                self.execution.failed(oid, exc.effect, epoch or self.epoch)
             raise
         except BaseException:
-            if claim or control or method == 'commit_privileged':
-                self.execution.failed(oid, 'unknown' if admitted else 'not_started')
+            if method == 'query':
+                self.execution.query_failed(oid, epoch or self.epoch)
+            elif tracked:
+                self.execution.failed(oid, 'unknown' if admitted else 'not_started', epoch or self.epoch)
             raise
         finally:
-            if lock is not None:
+            if owns_request:
+                self.operation_requests.discard(oid)
+            if acquired:
                 lock.release()
                 self.session_locks.pop(session_key, None)
 
@@ -251,6 +267,10 @@ class RemoteSlot:
             if epoch and epoch != self.epoch:
                 raise RemoteError('runtime_changed', 'Ticket belongs to another Runtime instance', effect='unknown')
             lease, connection = self.lease, self.connection
+            if method in {'submit', 'prepare_privileged', 'commit_privileged', 'session'}:
+                # Bind before sending: an event may arrive before this RPC's
+                # receipt, including on the slot's very first connection.
+                self.execution.bind(params.get('operation_id', ''), connection.epoch)
             task = asyncio.current_task()
             loop = asyncio.get_running_loop()
             try:
