@@ -362,7 +362,10 @@ class NativeExecutionRuntime(ExecutionRuntime):
         return result
 
     def execution_diagnostics(self):
-        return {"backend": "pal-shell-native", "sessions": len(self.shell_owner.sessions)}
+        owner = self.shell_owner
+        return {"backend": "pal-shell-native", "sessions": len(owner.sessions),
+                "active_calls": owner.active_calls, "pending_outputs": len(owner.pending),
+                "has_work": owner.has_work}
 
     @classmethod
     def project_view(cls, view, owner):
@@ -374,8 +377,10 @@ class NativeExecutionRuntime(ExecutionRuntime):
 
     async def _call_record_async(self, record, binding, call, validated, turn_id, budget, allow_tools):
         arguments = record, binding, call, validated, turn_id, budget, allow_tools
-        from pal.execution.runtime import _is_plugin_lifecycle_tool
-        if _is_plugin_lifecycle_tool(record.alias):
+        from pal.execution.runtime import _is_package_job_tool, _is_plugin_lifecycle_tool
+        # Package handlers only queue/wait/read jobs. The package worker owns
+        # activation; counting its waiter would make self-update reject itself.
+        if _is_plugin_lifecycle_tool(record.alias) or _is_package_job_tool(record.alias):
             return await super()._call_record_async(*arguments)
         try:
             async with self.shell_owner.tool_scope():

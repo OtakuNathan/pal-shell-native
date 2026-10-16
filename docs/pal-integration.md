@@ -30,6 +30,13 @@ surface. Idle cleanup closes the plugin's native resources and remote Hub; Pal
 restores the built-in schema without closing its shared executor. Whole-host
 shutdown uses asynchronous quiesce before checkpoint and resource release.
 
+Package job tools queue, wait for, or inspect background installation work; their
+callers do not count as native calls. The package worker owns lifecycle switching,
+so an idle plugin can update itself while `install_package` or `prepare_package`
+waits for completion. Real foreground calls, live sessions and retained output
+still prevent detach. Execution debug dumps include active-call and pending-output
+counts alongside the native work flag.
+
 The plugin manifest declares `[execution].role_entrypoint` and `worker_modules`.
 Bunshin activates contributions only from enabled, attached installed packages;
 its sandbox binds declared dependencies read-only. Native roles receive the local
