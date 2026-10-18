@@ -117,11 +117,23 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             for terminal in (False, True):
                 with self.subTest(target=target, terminal=terminal):
                     marker = 'main-owned-output'
-                    command = ('sleep .05; printf ' + marker if terminal
-                               else 'printf ' + marker + '; sleep 30')
+                    gate = self.path / f'output-ready-{target}-{terminal}'
+                    # Emit only after the initial tool delivery, so that it
+                    # cannot consume the output this test intends to borrow.
+                    command = (f'while [ ! -f {shlex.quote(str(gate))} ]; do sleep .01; done; '
+                               f'printf {marker}' + ('' if terminal else '; sleep 30'))
                     result = await self.tool('run_shell', target=target, cmd=command, wait_ms=1)
+                    self.assertTrue(result.ok, result.text)
+                    self.assertEqual(result.structured['status'], 'running')
                     sid = result.structured['session_id']
-                    await self.owner.shell.session_snapshot(sid, wait_ms=500 if terminal else 50)
+                    gate.touch()
+                    async with asyncio.timeout(5):
+                        while True:
+                            snapshot = await self.owner.shell.session_snapshot(sid, wait_ms=100)
+                            if (snapshot['stdout_total'] == len(marker)
+                                    and snapshot['status'] == ('exited' if terminal else 'running')):
+                                break
+                            await asyncio.sleep(.01)
                     before = deepcopy(self.owner.sessions[sid])
                     turn_id = f'temporary-reader-{target}-{terminal}'
                     read = await self.transient_tool(new_tool_call(name='call_tool', args={
