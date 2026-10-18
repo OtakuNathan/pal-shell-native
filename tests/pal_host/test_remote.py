@@ -80,6 +80,216 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, tool_name, **args):
         return await self.runtime.execute_tool_async(new_tool_call(name=tool_name, args=args), turn_id='origin')
 
+    async def transient_tool(self, call, *, turn_id):
+        # The plugin consumes this invocation metadata contract. Core's fork
+        # and /btw lifecycle are tested by Pal, so these backend tests also run
+        # against the released Core version pinned by the integration workflow.
+        from unittest.mock import patch
+        original_meta = self.runtime._invocation_meta
+
+        def transient_meta(*args, **kwargs):
+            return {**original_meta(*args, **kwargs), 'transient_execution': True}
+
+        with patch.object(self.runtime, '_invocation_meta', transient_meta):
+            return await self.runtime.execute_tool_async(call, turn_id=turn_id)
+
+    async def test_transient_remote_work_is_retired_without_stopping_main_work(self):
+        main = await self.tool('run_shell', target=1, cmd='sleep 30', wait_ms=1)
+        self.assertTrue(main.ok, main.llm_text)
+        main_sid = main.structured['session_id']
+        call = new_tool_call(name='run_shell', args={'target': 1, 'cmd': 'sleep 30', 'wait_ms': 1})
+        result = await self.transient_tool(call, turn_id='temporary-side')
+        self.assertTrue(result.ok, result.llm_text)
+        side_sid = result.structured['session_id']
+        self.assertTrue(self.owner.sessions[side_sid]['transient'])
+        self.assertFalse(self.owner.sessions[main_sid]['transient'])
+        await asyncio.wait_for(self.owner.finish_transient_turn('temporary-side'), timeout=5)
+        self.assertNotIn(side_sid, self.owner.sessions)
+        self.assertNotIn(side_sid, self.owner.shell.tickets)
+        self.assertIn(main_sid, self.owner.sessions)
+        self.assertIn(main_sid, self.owner.shell.tickets)
+        self.assertFalse(any(context.get('origin_turn') == 'temporary-side'
+                             for context in self.owner.shell.operation_context.values()))
+
+    async def test_transient_reads_preserve_main_delivery(self):
+        from copy import deepcopy
+        for target in (0, 1):
+            for terminal in (False, True):
+                with self.subTest(target=target, terminal=terminal):
+                    marker = 'main-owned-output'
+                    command = ('sleep .05; printf ' + marker if terminal
+                               else 'printf ' + marker + '; sleep 30')
+                    result = await self.tool('run_shell', target=target, cmd=command, wait_ms=1)
+                    sid = result.structured['session_id']
+                    await self.owner.shell.session_snapshot(sid, wait_ms=500 if terminal else 50)
+                    before = deepcopy(self.owner.sessions[sid])
+                    turn_id = f'temporary-reader-{target}-{terminal}'
+                    read = await self.transient_tool(new_tool_call(name='call_tool', args={
+                        'name': 'read_shell_session', 'args': {'session_id': sid}}), turn_id=turn_id)
+                    self.assertTrue(read.ok, read.text)
+                    self.assertIn(marker, read.text)
+                    await self.owner.finish_transient_turn(turn_id)
+                    self.assertIn(sid, self.owner.sessions)
+                    for field in ('output_offsets', 'last_observation_call', 'last_observation_turn',
+                                  'terminal_delivered', 'output_failure_reported'):
+                        self.assertEqual(self.owner.sessions[sid].get(field), before.get(field), field)
+                    self.assertFalse(any(p.turn_id == turn_id for p in self.owner.pending.values()))
+                    main = await self.tool('call_tool', name='read_shell_session', args={'session_id': sid})
+                    self.assertTrue(main.ok, main.text)
+                    self.assertIn(marker, main.text)
+                    await asyncio.gather(*tuple(self.owner.observations.acking.values()))
+                    if terminal:
+                        self.assertNotIn(sid, self.owner.sessions)
+
+    async def test_transient_output_recovery_preserves_main_reference(self):
+        from unittest.mock import patch
+        for target in (0, 1):
+            for read_failure in (False, True):
+                with self.subTest(target=target, read_failure=read_failure):
+                    call = new_tool_call(name='run_shell', args={'target': target, 'cmd': 'printf retained-main-output'})
+                    with patch.object(self.owner.shell, 'materialize', side_effect=OSError('injected export failure')), \
+                            patch('pal_shell_native.recovery.RETRY_DELAYS', (0, 0, 0, 0)):
+                        await self.runtime.execute_tool_async(call, turn_id='origin')
+                    original = self.owner.pending[call.call_id]
+                    self.assertEqual(original.result['session_id'], 0)
+                    self.assertTrue(original.delivered and original.failure)
+                    turn_id = f'temporary-recovery-{target}-{read_failure}'
+                    read_call = new_tool_call(name='call_tool', args={
+                        'name': 'read_shell_session', 'args': {'output_ref': call.call_id}})
+                    if read_failure:
+                        with patch.object(self.owner.shell, 'materialize', side_effect=OSError('injected reader failure')), \
+                                patch('pal_shell_native.recovery.RETRY_DELAYS', (0, 0, 0, 0)):
+                            await self.transient_tool(read_call, turn_id=turn_id)
+                        self.assertTrue(any(p.borrowed and p.turn_id == turn_id for p in self.owner.pending.values()))
+                        await self.owner.interrupt(turn_id)
+                    else:
+                        read = await self.transient_tool(read_call, turn_id=turn_id)
+                        self.assertIn('retained-main-output', read.text)
+                    await self.owner.finish_transient_turn(turn_id)
+                    self.assertIs(self.owner.pending[call.call_id], original)
+                    self.assertFalse(any(p.turn_id == turn_id for p in self.owner.pending.values()))
+                    main = await self.tool('call_tool', name='read_shell_session', args={'output_ref': call.call_id})
+                    self.assertTrue(main.ok, main.text)
+                    self.assertIn('retained-main-output', main.text)
+                    await asyncio.gather(*tuple(self.owner.observations.acking.values()))
+                    self.assertNotIn(call.call_id, self.owner.pending)
+
+    async def test_late_transient_results_are_retired_without_resubmitting_commands(self):
+        from unittest.mock import patch
+        main = await self.tool('run_shell', target=1, cmd='sleep 30', wait_ms=1)
+        main_sid = main.structured['session_id']
+        for label, command, wait_ms in (
+            ('live', 'sleep 30', 1),
+            ('terminal', 'sleep .05; printf private', 1),
+            ('oneshot', 'printf private', 300000),
+        ):
+            with self.subTest(case=label):
+                original = self.port.request
+                offline = False
+                submissions = []
+
+                async def lose(target, method, params, epoch=None):
+                    nonlocal offline
+                    if offline and method in {'query', 'events'}:
+                        raise RemoteFailure('transport_lost', 'Offline during recovery', effect='unknown')
+                    result = await original(target, method, params, epoch)
+                    if method == 'submit':
+                        submissions.append(params['operation_id'])
+                        offline = True
+                        raise RemoteFailure('transport_lost', 'Lost submit confirmation', effect='unknown')
+                    return result
+
+                self.port.request = lose
+                turn_id = 'temporary-' + label
+                try:
+                    with patch('pal_shell_native.recovery.RETRY_DELAYS', (0, 0, 0, 0)):
+                        result = await self.transient_tool(new_tool_call(name='run_shell', args={
+                            'target': 1, 'cmd': command, 'wait_ms': wait_ms}), turn_id=turn_id)
+                        self.assertFalse(result.ok)
+                        self.assertFalse(any(s.get('origin_turn') == turn_id for s in self.owner.sessions.values()))
+                        with self.assertRaisesRegex(RuntimeError, 'Could not retire temporary shell work'):
+                            await self.owner.finish_transient_turn(turn_id)
+                        self.assertIn(turn_id, self.owner.retiring_transient_turns)
+                        # Reconnection supplies new evidence to the backend owner,
+                        # even though the side question has already ended.
+                        if label == 'oneshot':
+                            self.owner.detach_remote(self.port)
+                            offline = False
+                            # Plugin attachment is synchronous and may run on
+                            # a lifecycle thread outside the shell's event loop.
+                            await asyncio.to_thread(self.owner.attach_remote, self.port)
+                        else:
+                            offline = False
+                        async with asyncio.timeout(5):
+                            while turn_id in self.owner.retiring_transient_turns:
+                                await asyncio.sleep(.01)
+                    self.assertEqual(len(submissions), 1)
+                    self.assertNotIn(submissions[0], self.owner.shell.operations)
+                    self.assertFalse(any(s.get('origin_turn') == turn_id for s in self.owner.sessions.values()))
+                    self.assertFalse(any(p.turn_id == turn_id for p in self.owner.pending.values()))
+                    self.assertFalse(any(c.get('origin_turn') == turn_id for c in self.owner.shell.operation_context.values()))
+                    self.assertIn(main_sid, self.owner.sessions)
+                    self.assertEqual((await self.owner.shell.observe(main_sid))['status'], 'running')
+                    self.assertEqual(len(self.worker.outputs), 1)  # Only main-owned output remains.
+                    self.assertFalse(self.core.state.active_turns)
+                finally:
+                    offline = False
+                    self.port.request = original
+
+    async def test_transient_release_confirmation_loss_does_not_leave_owned_work(self):
+        result = await self.transient_tool(new_tool_call(name='run_shell', args={
+            'target': 1, 'cmd': 'sleep 30', 'wait_ms': 1}), turn_id='temporary-release')
+        sid = result.structured['session_id']
+        self.port.drop_release = True
+        await asyncio.wait_for(self.owner.finish_transient_turn('temporary-release'), timeout=5)
+        self.assertFalse(self.port.drop_release)
+        self.assertNotIn(sid, self.owner.sessions)
+        self.assertNotIn(sid, self.owner.shell.tickets)
+        self.assertNotIn('temporary-release', self.owner.retiring_transient_turns)
+        self.assertFalse(self.owner.transient_retirement_tasks)
+        self.assertFalse(self.worker.outputs)
+
+    async def test_transient_termination_confirmation_loss_is_reconciled_after_reconnect(self):
+        from unittest.mock import patch
+        turn_id = 'temporary-control'
+        result = await self.transient_tool(new_tool_call(name='run_shell', args={
+            'target': 1, 'cmd': 'sleep 30', 'wait_ms': 1}), turn_id=turn_id)
+        sid = result.structured['session_id']
+        original = self.port.request
+        offline = False
+        controls = []
+
+        async def lose(target, method, params, epoch=None):
+            nonlocal offline
+            if offline:
+                raise RemoteFailure('transport_lost', 'Offline after termination', effect='unknown')
+            response = await original(target, method, params, epoch)
+            if method == 'session' and params['action'] == 'terminate' and not controls:
+                controls.append(params['operation_id'])
+                offline = True
+                raise RemoteFailure('transport_lost', 'Lost termination confirmation', effect='unknown')
+            return response
+
+        self.port.request = lose
+        try:
+            with patch('pal_shell_native.recovery.RETRY_DELAYS', (0, 0, 0, 0)):
+                with self.assertRaisesRegex(RuntimeError, 'Could not retire temporary shell work'):
+                    await self.owner.finish_transient_turn(turn_id)
+                self.assertIn(turn_id, self.owner.retiring_transient_turns)
+                offline = False
+                async with asyncio.timeout(5):
+                    while turn_id in self.owner.retiring_transient_turns:
+                        await asyncio.sleep(.01)
+            self.assertNotIn(sid, self.owner.sessions)
+            self.assertNotIn(sid, self.owner.shell.tickets)
+            self.assertNotIn(controls[0], self.owner.shell.operations)
+            self.assertFalse(self.owner.shell.operation_context)
+            self.assertFalse(self.owner.has_work)
+            self.assertFalse(self.worker.outputs)
+        finally:
+            offline = False
+            self.port.request = original
+
     async def test_old_linux_worker_cannot_receive_new_shell_submissions(self):
         from unittest.mock import patch
         original = self.worker.handle

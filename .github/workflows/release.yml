@@ -103,6 +103,7 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '2'
       - run: python tests/test_remote.py
+      - run: python tests/test_worker_environment.py
       - run: python tests/test_sudo_setup.py
       - run: python tests/test_transport.py
         env:

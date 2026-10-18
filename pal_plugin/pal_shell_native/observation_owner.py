@@ -94,7 +94,7 @@ class ObservationOwner:
     def eligible(self, sid, *, ready=False, claimed=False):
         event = self.pending.get(sid)
         session = self.owner.sessions.get(sid)
-        if event is None or session is None or not session.get('committed'):
+        if event is None or session is None or session.get('transient') or not session.get('committed'):
             return False
         if not observation_is_current(event.result, session) or sid in self.failures:
             return False
@@ -337,7 +337,7 @@ class ObservationOwner:
         runtime.bind_result_history(memory)
         self.collect()
         candidates = [(sid, session) for sid, session in self.owner.sessions.items()
-                      if session.get('committed') and session.get('watching', True)]
+                      if session.get('committed') and session.get('watching', True) and not session.get('transient')]
         if not candidates:
             return
         turn = memory.active_l1_turn(continuation.turn_id)

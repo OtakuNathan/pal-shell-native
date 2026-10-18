@@ -66,3 +66,4 @@ class PendingOutput:
     delivered: bool = False
     failure: str = ""
     covers_output: bool = True
+    borrowed: bool = False  # This reader cannot acknowledge the original owner's output.

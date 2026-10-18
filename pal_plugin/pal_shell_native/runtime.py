@@ -43,6 +43,9 @@ class NativeShellOwner:
         self.on_ready = None
         self.active_calls = 0
         self.remote_port = None
+        self.retiring_transient_turns = set()
+        self.transient_retirement_tasks = {}
+        self._transient_retirement_again = set()
         from .approval import ShellApprovals
         self.approvals = ShellApprovals(self)
         from .observation_owner import ObservationOwner
@@ -91,6 +94,50 @@ class NativeShellOwner:
         self.observations.retry_acknowledgements()
         if self._shell is not None:
             self._shell.loop.call_soon_threadsafe(self._shell.resume)
+            for turn_id in tuple(self.retiring_transient_turns):
+                self._shell.loop.call_soon_threadsafe(self.queue_transient_retirement, turn_id)
+
+    def queue_transient_retirement(self, turn_id):
+        """Own late cleanup without retaining a side-question/model runtime."""
+        if self.closed or turn_id not in self.retiring_transient_turns:
+            return None
+        previous = self.transient_retirement_tasks.get(turn_id)
+        if previous is not None:
+            self._transient_retirement_again.add(turn_id)
+            return previous
+        task = asyncio.create_task(self._retire_transient_work(turn_id))
+        self.transient_retirement_tasks[turn_id] = task
+
+        def finished(completed):
+            self.transient_retirement_tasks.pop(turn_id, None)
+            again = turn_id in self._transient_retirement_again
+            self._transient_retirement_again.discard(turn_id)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is None:
+                self.retiring_transient_turns.discard(turn_id)
+            elif not self.closed:
+                LOGGER.warning('Temporary shell cleanup failed turn=%s error=%s', turn_id, error)
+                if self.core is not None and turn_id not in self.core.state.active_turns:
+                    self.core.state.diagnostics.append({'kind': 'execution.transient_cleanup_failed',
+                        'turn_id': turn_id, 'error': str(error)})
+                if again:
+                    self.queue_transient_retirement(turn_id)
+            if not self.closed:
+                self.notify()
+
+        task.add_done_callback(finished)
+        return task
+
+    async def finish_transient_turn(self, turn_id):
+        """Retire native work at the host's temporary-turn boundary."""
+        if self.closed:
+            return
+        self.retiring_transient_turns.add(turn_id)
+        task = self.queue_transient_retirement(turn_id)
+        if task is not None:
+            await asyncio.shield(task)
 
     def detach_remote(self, port):
         if self.remote_port is port:
@@ -103,10 +150,12 @@ class NativeShellOwner:
         if self.core is not None:
             self.core.notify_ready()
 
-    async def stage(self, call, result, *, recovery_of="", raw=None):
-        self.observations.record(result)
+    async def stage(self, call, result, *, recovery_of="", raw=None, borrowed=False):
+        if not borrowed:
+            self.observations.record(result)
         tool_call = call.meta["tool_call"]
-        pending = PendingOutput(result, str(call.meta.get("turn_id") or ""), recovery_of=recovery_of)
+        pending = PendingOutput(result, str(call.meta.get("turn_id") or ""), recovery_of=recovery_of,
+                                borrowed=borrowed)
         self.pending[tool_call.call_id] = pending
         try:
             if result.get("target") and raw is None:
@@ -129,6 +178,19 @@ class NativeShellOwner:
     async def commit(self, call_id):
         pending = self.pending.get(call_id)
         if pending is None:
+            return
+        if pending.borrowed:
+            if not pending.prepared and not pending.failure:
+                return
+            pending.delivered = True
+            if not pending.failure:
+                # Retire this reader's recovery chain, leaving the original
+                # owner's delivery evidence and acknowledgement unchanged.
+                turn_id = pending.turn_id
+                while pending is not None and pending.borrowed and pending.turn_id == turn_id:
+                    self.pending.pop(call_id, None)
+                    call_id = pending.recovery_of
+                    pending = self.pending.get(call_id)
             return
         sid = pending.result["session_id"]
         session = self.sessions.get(sid)
@@ -180,6 +242,9 @@ class NativeShellOwner:
                     await self.shell._discard_cancelled_session(sid)
                 self.forget_session(sid)
         for call_id, pending in list(self.pending.items()):
+            if pending.turn_id == turn_id and pending.borrowed:
+                self.pending.pop(call_id, None)
+                continue
             if pending.result.get("target"):
                 continue
             if pending.turn_id == turn_id and pending.result["session_id"] not in self.sessions:
@@ -209,6 +274,8 @@ class NativeShellOwner:
                 self.pending.pop(call_id, None)
 
     def check_idle(self):
+        if self.transient_retirement_tasks:
+            raise ShellRejected("execution_busy: temporary shell cleanup is still active")
         if any(self.observations.acking.values()) or any(
             not task.done() for store in (self.observations.refreshing, self.observations.preparing)
             for task in store.values()
@@ -239,6 +306,10 @@ class NativeShellOwner:
 
     async def close(self):
         self.closed = True
+        tasks = tuple(self.transient_retirement_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self.observations.close()
         if self.events is not None:
             await self.events.close()
@@ -249,6 +320,66 @@ class NativeShellOwner:
         self.sessions.clear()
         for call_id in tuple(self.input_leases):
             self.release_input_lease(call_id)
+        self.retiring_transient_turns.clear()
+        self._transient_retirement_again.clear()
+
+    async def _retire_transient_work(self, turn_id):
+        if self.closed or self._shell is None:
+            return
+        from .adapter import Completion
+
+        # A delivered terminal result already has an asynchronous output
+        # acknowledgement. Drain only this turn's acknowledgements first.
+        acknowledgements = set()
+        for pending in tuple(self.pending.values()):
+            if pending.turn_id == turn_id and not pending.borrowed:
+                key = self.observations.ack_key(Completion(
+                    pending.result['session_id'], turn_id, pending.result))
+                task = self.observations.acking.get(key)
+                if task is not None:
+                    acknowledgements.add(task)
+        await asyncio.gather(*acknowledgements, return_exceptions=True)
+
+        errors = await self.shell.reconcile_transient(turn_id)
+        async with self.tool_scope():
+            for sid, session in tuple(self.sessions.items()):
+                if session.get('origin_turn') != turn_id or not session.get('transient'):
+                    continue
+                if not sid:
+                    self.sessions.pop(sid, None)
+                    continue
+                try:
+                    result = await self.shell.session_snapshot(sid, action='terminate')
+                    while result['status'] not in TERMINAL:
+                        result = await self.shell.session_snapshot(sid, action='read', wait_ms=5000)
+                    await retry_read(lambda: self.shell.release_output(result), stage='transient_release', identity=str(sid))
+                except ShellRejected as exc:
+                    if 'invalid_session' not in str(exc):
+                        errors.append(exc)
+                        continue
+                except Exception as exc:
+                    # Keep uncertain remote ownership for backend reconciliation;
+                    # it never acquires resident completion-delivery authority.
+                    errors.append(exc)
+                    continue
+                self.forget_session(sid)
+            for call_id, pending in tuple(self.pending.items()):
+                if pending.turn_id != turn_id:
+                    continue
+                if pending.borrowed:
+                    self.pending.pop(call_id, None)
+                    continue
+                if pending.result['session_id'] in self.sessions:
+                    continue
+                try:
+                    await retry_read(lambda: self.shell.release_output(pending.result), stage='transient_release', identity=call_id)
+                except Exception as exc:
+                    errors.append(exc)
+                    continue
+                self.pending.pop(call_id, None)
+                self.release_input_lease(call_id)
+        if errors:
+            raise RuntimeError('Could not retire temporary shell work: ' + '; '.join(str(exc) for exc in errors))
 
     async def reset(self):
         if self._shell is not None and self._shell.remote_work:
@@ -547,6 +678,17 @@ class NativeExecutionRuntime(ExecutionRuntime):
     async def interrupt_turn(self, turn_id):
         await self.shell_owner.interrupt(turn_id)
         await super().interrupt_turn(turn_id)
+
+    async def finish_transient_turn(self, turn_id):
+        owner = self.shell_owner
+        if owner.closed:
+            await super().finish_transient_turn(turn_id)
+            return
+        owner.retiring_transient_turns.add(turn_id)
+        try:
+            await super().finish_transient_turn(turn_id)
+        finally:
+            await owner.finish_transient_turn(turn_id)
 
     async def shutdown_async(self):
         if self._owns_shell:

@@ -7,6 +7,7 @@ import signal
 import tomllib
 
 from .worker import Worker, WorkerConfig
+from .environment import restore_subprocess_environment
 
 
 def load_config(path):
@@ -34,6 +35,7 @@ async def serve(config):
 
 
 def main():
+    restore_subprocess_environment()
     parser = argparse.ArgumentParser(prog='pal-shell-worker')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--management-helper', action='store_true', help=argparse.SUPPRESS)

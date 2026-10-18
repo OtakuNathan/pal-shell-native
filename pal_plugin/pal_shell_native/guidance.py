@@ -38,6 +38,9 @@ RUN_GUIDANCE = ToolGuidance(
         "Completion is delivered separately while the session is watched. "
         + RUNNING_SESSION_GUIDANCE +
         " Command success requires status=exited and returncode=0. "
+        "POSIX commands run through a shell with the command text in its arguments. "
+        "pkill -f and similar full-command-line matches may also terminate that outer shell. "
+        "For tracked tasks prefer terminate_shell_session with the returned session_id. "
     ) + SHELL_RESULT_GUIDANCE + " " + NONZERO_EXIT_GUIDANCE,
     do_not_use_when=(
         "A dedicated file or Pal runtime/module/Bunshin introspection tool directly handles the task."

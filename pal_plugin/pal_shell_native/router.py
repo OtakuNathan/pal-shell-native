@@ -18,7 +18,7 @@ from uuid import uuid4
 from .adapter import ShellRuntime, ShellRejected, Completion, TERMINAL
 from pal_shell_contracts import RemoteFailure
 from pal_shell_contracts.remote_lifecycle import can_adopt, poll_decision, snapshot_is_older
-from .recovery import LOGGER
+from .recovery import LOGGER, retry_read
 
 
 @dataclass
@@ -44,6 +44,7 @@ class ShellRouter(ShellRuntime):
         self.remote_completions = {}
         self.cursors = {}
         self.poll_task = None
+        self._retirement_retry_targets = set()
         self.cache = tempfile.TemporaryDirectory(prefix='pal-shell-output-')
         self.cache_files = {}
         self.cache_sizes = {}
@@ -90,7 +91,9 @@ class ShellRouter(ShellRuntime):
                    for sid in self.tickets) or any(t.kind == "execution" and not t.native_id and not t.output_id
                                                  for t in self.operations.values()) or any(
                        c.get('control') and not c.get('read_only') and not c.get('resolved')
-                       for c in self.operation_context.values())
+                       for c in self.operation_context.values()) or any(
+                       c.get('transient') and c.get('origin_turn') in self.owner.retiring_transient_turns
+                       for oid, c in self.operation_context.items() if oid in self.operations)
 
     def _port(self):
         if self.owner.remote_port is None:
@@ -123,6 +126,11 @@ class ShellRouter(ShellRuntime):
             port = self._port()
             result = await port.request(ticket.target, method, params, ticket.epoch or None)
         except RemoteFailure as exc:
+            if (ticket.origin_turn in self.owner.retiring_transient_turns and exc.code in {
+                'transport_lost', 'transport_timeout', 'transport_closed', 'transport_unavailable',
+                'backend_unavailable', 'connection_unavailable',
+            }):
+                self._retirement_retry_targets.add((ticket.target, ticket.epoch))
             observed = self.worker_epochs.get(ticket.target)
             if exc.code == 'runtime_changed' and (observed is None or observed[1] in {None, ticket.epoch}):
                 self.retired_worker_epochs.setdefault(ticket.target, set()).add(ticket.epoch)
@@ -222,7 +230,7 @@ class ShellRouter(ShellRuntime):
                 args['wait_ms'] = 1000 if args.get('tty') else 300000
             submitted = True
             self.operation_context[ticket.operation_id]['submitted'] = True
-            args['_hold_output'] = self.owner.require_output_delivery
+            args['_hold_output'] = self.owner.require_output_delivery or bool((delivery_context or {}).get('transient'))
             response = await self._rpc(ticket, 'submit', {'operation_id': ticket.operation_id, 'cmd': cmd, **args})
             result = await self._outcome(ticket, response)
             return await self.materialize(result) if kwargs.get('load_output', True) else result
@@ -315,7 +323,7 @@ class ShellRouter(ShellRuntime):
                 args['protected_machine_id'] = identity['machine_identity']
             self.operation_context[ticket.operation_id]['submitted'] = True
             prepared = await self._rpc(ticket, 'prepare_privileged', {'operation_id': ticket.operation_id,
-                '_hold_output': self.owner.require_output_delivery, **args})
+                '_hold_output': self.owner.require_output_delivery or bool((delivery_context or {}).get('transient')), **args})
             args = prepared.get('normalized_args', args)
             await self.owner.approvals.request(ticket.origin_turn, target, args, prepared['approval'])
             if port is not self.owner.remote_port:
@@ -369,6 +377,7 @@ class ShellRouter(ShellRuntime):
             if ticket.target != target:
                 continue
             context = self.operation_context.get(ticket.operation_id, {})
+            hold_output = self.owner.require_output_delivery or bool(context.get('transient'))
             if not context.get('submitted') and not ticket.native_id and not ticket.output_id:
                 continue
             if context.get('read_only'):
@@ -382,14 +391,14 @@ class ShellRouter(ShellRuntime):
             if context.get('control') and not context.get('resolved'):
                 state = 'unknown'
             elif ticket.output_id and (not ticket.native_id or state in TERMINAL):
-                if not self.owner.require_output_delivery:
+                if not hold_output:
                     continue
                 state = 'delivery'
             else:
                 state = 'running' if ticket.native_id and state not in TERMINAL else 'unknown'
             records.append(dict(operation_id=ticket.operation_id, epoch=ticket.epoch,
                 state=state, session_id=ticket.native_id, output_id=ticket.output_id,
-                hold_output=self.owner.require_output_delivery, control=bool(context.get('control')),
+                hold_output=hold_output, control=bool(context.get('control')),
                 kind=('control' if context.get('control') else 'shutdown' if ticket.kind == 'shutdown'
                       else 'privileged' if context.get('privileged') else 'execution'),
                 **({'unsigned': not context.get('signed')} if context.get('privileged') else {})))
@@ -416,6 +425,37 @@ class ShellRouter(ShellRuntime):
             self.operation_context.pop(operation_id, None)
             return {'target': ticket.target, 'operation_id': operation_id, **response['result']}
         return await self._outcome(ticket, response)
+
+    async def reconcile_transient(self, turn_id):
+        """Resolve original tickets before retiring output; never resubmit work."""
+        errors = []
+        for oid, ticket in tuple(self.operations.items()):
+            context = self.operation_context.get(oid, {})
+            if ticket.origin_turn != turn_id or not context.get('transient'):
+                continue
+            try:
+                if not context.get('resolved'):
+                    result = await retry_read(lambda: self.reconcile(oid), stage='transient_query', identity=oid)
+                elif context.get('control'):
+                    continue  # The original output release retires resolved controls.
+                elif ticket.latest_result is not None:
+                    result = self._adopt(ticket, ticket.latest_result)
+                else:
+                    raise RemoteFailure('execution_unknown', 'Temporary execution has no confirmed result',
+                                        effect='unknown', operation_id=oid)
+                if result.get('session_id'):
+                    session = self.owner.sessions.setdefault(result['session_id'], dict(context))
+                    session['latest_status'] = result['status']
+                elif result.get('output_id'):
+                    await retry_read(lambda: self.release_output(result), stage='transient_release', identity=oid)
+                    self.owner.release_input_lease(context.get('input_lease_id'))
+            except RemoteFailure as exc:
+                if exc.code == 'output_released' and oid not in self.operations:
+                    continue
+                errors.append(exc)
+            except Exception as exc:
+                errors.append(exc)
+        return errors
 
     async def session_snapshot(self, session_id, *, action='read', **kwargs):
         if session_id < 1 << 48:
@@ -527,12 +567,19 @@ class ShellRouter(ShellRuntime):
         self.remote_completions.pop(ticket.public_id, None)
 
     async def _poll_target(self, target, epoch):
+        reachable = False
         while not self._closed and self.owner.remote_port:
             ticket = next((t for t in self.operations.values() if (t.target, t.epoch) == (target, epoch)), None)
             if ticket is None:
                 return
             try:
                 response = await self._rpc(ticket, 'events', {'after': self.cursors.get((target, epoch), 0), 'wait_ms': 0})
+                if not reachable or (target, epoch) in self._retirement_retry_targets:
+                    self._retirement_retry_targets.discard((target, epoch))
+                    for execution in tuple(self.operations.values()):
+                        if (execution.target, execution.epoch) == (target, epoch):
+                            self.owner.queue_transient_retirement(execution.origin_turn)
+                reachable = True
                 for event in response['events']:
                     result = event['result']
                     execution_id = result.get('execution_id')
@@ -552,6 +599,14 @@ class ShellRouter(ShellRuntime):
                         self.cursors[(target, epoch)] = event['cursor']
                         continue
                     adopted = self._adopt(owner, result)
+                    if owner.origin_turn in self.owner.retiring_transient_turns:
+                        if owner.public_id:
+                            observed = self.owner.sessions.setdefault(owner.public_id,
+                                dict(self.operation_context.get(owner.operation_id, {})))
+                            observed['latest_status'] = adopted['status']
+                        self.owner.queue_transient_retirement(owner.origin_turn)
+                        self.cursors[(target, epoch)] = event['cursor']
+                        continue
                     observed = self.owner.sessions.setdefault(owner.public_id,
                         dict(self.operation_context.get(owner.operation_id, {})))
                     observed['latest_status'] = adopted['status']
@@ -563,6 +618,7 @@ class ShellRouter(ShellRuntime):
                         self.owner.notify()
                     self.cursors[(target, epoch)] = event['cursor']
             except RemoteFailure:
+                reachable = False
                 pass  # Reachability is not execution state. Tickets remain resident.
             await asyncio.sleep(1)
 
@@ -574,6 +630,8 @@ class ShellRouter(ShellRuntime):
                     if t.epoch and t.kind == 'execution'
                     and self.operation_context.get(t.operation_id, {}).get('submitted')
                     and not self.operation_context.get(t.operation_id, {}).get('control'))
+                groups.update((t.target, t.epoch) for t in self.operations.values()
+                    if t.epoch and t.origin_turn in self.owner.retiring_transient_turns)
                 for key in groups:
                     if key not in self.poll_targets or self.poll_targets[key].done():
                         self.poll_targets[key] = self.loop.create_task(self._poll_target(*key))

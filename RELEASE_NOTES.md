@@ -1,3 +1,34 @@
+Unreleased: temporary side-question execution ownership.
+
+- Calls marked `transient_execution` retain temporary shell-session ownership.
+  Automatic observations and completion turns do not deliver their output to
+  the resident conversation. The host drains acknowledgements, terminates and
+  releases remaining temporary sessions at the end of the one-shot turn, while
+  preserving main-owned sessions. Tool schemas and permissions are unchanged.
+- Cleanup survives cancellation of the side turn. Unconfirmed remote operations
+  retain their original tickets; reconnect queries those tickets and retires late
+  sessions and output without resubmitting commands or restoring a conversation.
+- Temporary readers borrow main-owned session/output data without acknowledging
+  or releasing it. Read failures and cleanup leave the original delivery pending.
+- Backend tests exercise the temporary-invocation metadata and native retirement
+  boundary against the workflow's pinned Core. Pal owns the `/btw` fork/lifecycle
+  integration tests, so these plugin tests do not require an unreleased Core API.
+- Deploy these host-plugin changes together with Core's temporary-turn lifecycle.
+  They do not require a native C++ rebuild; the worker environment fix below does
+  require rebuilding the standalone worker bundle.
+
+Unreleased: frozen Linux worker subprocess environment.
+
+- Bundled workers restore `LD_LIBRARY_PATH_ORIG` before launching external
+  programs, or remove the bundle's `LD_LIBRARY_PATH` when no original existed.
+  User-provided paths survive; an explicitly saved empty original is restored
+  exactly. PyInstaller may normalize an initially empty path to an unset value;
+  both retain system-default lookup. Unfrozen workers are unchanged. This prevents
+  bundled OpenSSL from overriding system tool libraries.
+- Shell guidance explains that `pkill -f` can match the outer shell command line.
+- Activation requires rebuilding and restarting the remote worker. Updating host
+  plugin guidance alone does not replace an already running worker.
+
 Unreleased: concurrent shell sessions without session-wide write exclusion.
 
 - Pal continues to dispatch each turn's tool calls sequentially. A retained shell

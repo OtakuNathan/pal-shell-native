@@ -168,7 +168,8 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         lease_id = call.meta["tool_call"].call_id
         owner.input_leases[lease_id] = (execution.result_snapshots, execution.result_snapshots.lease_request(turn_id))
         delivery_context = {"input_lease_id": lease_id, "origin_turn": turn_id, "budget": budget, "binding": getattr(continuation, "delivery_binding", None),
-                            "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty"))}
+                            "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")),
+                            "transient": bool(call.meta.get("transient_execution"))}
         try:
             result = await owner.shell.run(**dict(call.args), turn_id=turn_id, delivery_context=delivery_context, retain_output=True, load_output=False,
                                            inline_limit=-1 if limit is None else min(limit, 2147483647))
@@ -184,11 +185,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         sid = result["session_id"]
         if sid:
             continuation = owner.core.state.active_turns.get(turn_id) if owner.core is not None else None
-            owner.sessions[sid] = {
-                "input_lease_id": lease_id, "origin_turn": turn_id, "budget": budget,
-                "binding": getattr(continuation, "delivery_binding", None),
-                "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")), "target": result.get("target", 0),
-            }
+            owner.sessions[sid] = {**delivery_context, "target": result.get("target", 0)}
         from .adapter import TERMINAL
         if not sid or result["status"] in TERMINAL:
             owner.release_input_lease(lease_id)
@@ -200,6 +197,8 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
     async def session_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
         args = dict(call.args)
+        transient = bool(call.meta.get("transient_execution"))
+        turn_id = str(call.meta.get("turn_id") or "")
         output_ref = args.pop("output_ref", None)
         if output_ref is not None:
             pending = owner.pending.get(output_ref)
@@ -210,20 +209,24 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
                 owner.pending.pop(output_ref, None)
                 owner.forget_session(pending.result.get("session_id", 0))
                 return self._result({"status": "released"})
-            return await owner.stage(call, pending.result, recovery_of=output_ref)
+            borrowed = transient and (pending.borrowed or pending.turn_id != turn_id)
+            return await owner.stage(call, pending.result, recovery_of=output_ref, borrowed=borrowed)
         if args.get("action", "read") == "read":
             for old_id, pending in tuple(owner.pending.items()):
                 if pending.delivered and pending.failure and pending.result.get("session_id") == args["session_id"]:
-                    return await owner.stage(call, pending.result, recovery_of=old_id)
+                    borrowed = transient and (pending.borrowed or pending.turn_id != turn_id)
+                    return await owner.stage(call, pending.result, recovery_of=old_id, borrowed=borrowed)
+        borrowed = transient and owner.sessions.get(args["session_id"], {}).get("origin_turn") != turn_id
         if args.get("action") == "release" and args["session_id"] >= 1 << 48:
             from .recovery import retry_read
             result = await retry_read(lambda: owner.shell.session_snapshot(**args),
                                       stage="release", identity=args["session_id"])
         else:
             result = await owner.shell.session_snapshot(**args)
-        owner.observations.record(result)
+        if not borrowed:
+            owner.observations.record(result)
         tracked = owner.sessions.get(args["session_id"])
-        if tracked is not None:
+        if tracked is not None and not borrowed:
             tracked["latest_status"] = result["status"]
         if result["status"] == "terminating" and owner.events is not None:
             owner.events.invalidate(args["session_id"], result)
@@ -245,7 +248,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         if result["status"] == "released":
             owner.forget_session(result["session_id"])
             return self._result({"session_id": result["session_id"], "status": "released"})
-        return await owner.stage(call, result)
+        return await owner.stage(call, result, borrowed=borrowed)
 
 
     @capability_action(
@@ -259,7 +262,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             search_domain_description="Shell command execution and retained session output.",
             search_terms=('read', 'inspect', 'retrieve', 'output', 'stdout', 'stderr', 'progress', 'export'),
             search_objects=('session', 'sessions', 'output'),
-            purpose='Read an existing shell session or retry export of retained output.', use_when='Use a returned identifier for a needed fresh snapshot or retained-output recovery. Successful delivery updates output acknowledgement; do not poll repeatedly or rerun the command.',
+            purpose='Read an existing shell session or retry export of retained output.', use_when='Use a returned identifier for a needed fresh snapshot or retained-output recovery. Delivery in the owning conversation updates output acknowledgement; do not poll repeatedly or rerun the command.',
             do_not_use_when="Do not invent identifiers or replay the original command to retrieve output.",
             failure_next_steps="Inspect previously delivered output or inspect_shell_status. A missing session does not prove the command never ran; reconcile uncertain controls before repeating them.",
         ),
