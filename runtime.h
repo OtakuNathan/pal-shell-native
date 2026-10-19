@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace dynabridge::pal_shell {
@@ -34,6 +35,14 @@ public:
                         bool tty, int wait_ms, int timeout_ms, int inline_limit);
     void run_limited_authorized(id_t request, std::string shell, std::string command, std::string cwd,
                                 bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit);
+    void run_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+                        bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text);
+    void run_limited_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+                                bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text);
+    void run_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+                                   bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text);
+    void run_limited_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+                                           bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text);
     void read(id_t request, id_t session, int wait_ms);
     void watch(id_t request, id_t session, int wait_ms, int extend_by_ms);
     void extend(id_t request, id_t session, int extend_by_ms);
@@ -53,7 +62,7 @@ public:
 private:
     void launch(id_t request, std::string shell, std::string command, std::string cwd,
                 bool tty, int wait_ms, int timeout_ms, int inline_limit,
-                id_t output_limit, bool allow_privilege);
+                id_t output_limit, bool allow_privilege, std::optional<std::string> stdin_text = std::nullopt);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

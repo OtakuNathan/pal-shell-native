@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "input_file.h"
 #include "session_lifecycle.h"
 #ifdef _WIN32
 #include "output_windows.h"
@@ -79,6 +80,7 @@ struct Runtime::Impl {
         id_t initial_request;
         std::unique_ptr<OutputFiles> files;
         std::string input;
+        std::optional<std::string> stdin_text;
         Poll* output = nullptr;
         Poll* errors = nullptr;
         std::vector<Timer*> timers;
@@ -393,8 +395,13 @@ struct Runtime::Impl {
 #endif
     void spawn(const std::shared_ptr<Session>& s) {
         s->files = std::make_unique<OutputFiles>();
+        std::unique_ptr<InputFile> input;
+        if (s->stdin_text) {
+            input = std::make_unique<InputFile>(*s->stdin_text);
+            s->stdin_text.reset();
+        }
         Child child = spawn_child(s->shell, s->command, s->cwd, s->tty, s->files->out, s->files->err,
-                                  s->output_limit != 0, s->allow_privilege);
+                                  s->output_limit != 0, s->allow_privilege, input ? input->fd() : -1);
         s->pid = child.pid;
         try {
             if (child.output >= 0) s->output = poll(s, std::exchange(child.output, -1), false);
@@ -546,9 +553,30 @@ void Runtime::run_limited_authorized(id_t request, std::string shell, std::strin
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, output_limit, true);
 }
+void Runtime::run_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+    bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text) {
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, 0, false, std::move(stdin_text));
+}
+void Runtime::run_limited_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+    bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text) {
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, output_limit, false, std::move(stdin_text));
+}
+void Runtime::run_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+    bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text) {
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, 0, true, std::move(stdin_text));
+}
+void Runtime::run_limited_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+    bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text) {
+    launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
+           wait_ms, timeout_ms, inline_limit, output_limit, true, std::move(stdin_text));
+}
 void Runtime::launch(id_t request, std::string shell, std::string command, std::string cwd,
                      bool tty, int wait_ms, int timeout_ms, int inline_limit,
-                     id_t output_limit, bool allow_privilege) {
+                     id_t output_limit, bool allow_privilege, std::optional<std::string> stdin_text) {
+    if (tty && stdin_text) throw std::invalid_argument("stdin_pty_conflict: stdin requires tty=false");
     if (inline_limit < -1) throw std::invalid_argument("invalid output budget");
     if (wait_ms < 0 || timeout_ms < 0) throw std::invalid_argument("negative timeout");
     for (const auto* value : {&shell, &command, &cwd})
@@ -563,6 +591,7 @@ void Runtime::launch(id_t request, std::string shell, std::string command, std::
     session->inline_limit = inline_limit;
     session->output_limit = output_limit;
     session->allow_privilege = allow_privilege;
+    session->stdin_text = std::move(stdin_text);
     session->tty = tty; session->wait_ms = wait_ms; session->timeout_ms = timeout_ms;
     impl_->post(request, [owner = impl_.get(), session] { owner->begin(session); });
 }

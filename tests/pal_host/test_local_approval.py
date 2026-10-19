@@ -24,6 +24,17 @@ class LocalApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.router.close()
 
+    async def test_stdin_is_approved_and_passed_to_the_same_execution(self):
+        text = 'print("approved")\n'
+        with patch.object(ShellRuntime, 'run', AsyncMock(return_value=self.result)) as launch:
+            async def approve(turn, target, args, grant):
+                launch.assert_not_called()
+                self.assertEqual(args['stdin'], text)
+            self.owner.approvals.request.side_effect = approve
+            await self.router.run('python -', stdin=text, sudo=True, turn_id='turn')
+            self.assertEqual(launch.call_args.kwargs['stdin'], text)
+            self.assertNotIn(text, launch.call_args.args[0])
+
     async def test_exact_local_command_and_directory_require_approval_before_launch(self):
         command = 'printf "quoted ; sudo && text"; pacman -S --noconfirm cmake'
         with patch.object(ShellRuntime, 'run', AsyncMock(return_value=self.result)) as launch:

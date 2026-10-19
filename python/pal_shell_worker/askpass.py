@@ -37,7 +37,10 @@ def authorize(config):
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         timeout=2, check=False).stdout.decode().strip()
     fields = observed.split(None, 1)
-    expected = ' '.join(['/usr/bin/sudo', '-A', '-k', '--', config['privilege_helper'], config['shell'], args['cmd']])
+    from .input import stdin_identity
+    identity = stdin_identity(args.get('stdin'))
+    expected = ' '.join(['/usr/bin/sudo', '-A', '-k', '--', config['privilege_helper'], config['shell'], args['cmd'],
+                         *([str(identity[0]), identity[1]] if identity is not None else [])])
     if len(fields) != 2 or fields[0] != '0' or fields[1] != expected or os.getppid() != parent:
         return False
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:

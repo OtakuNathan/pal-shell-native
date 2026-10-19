@@ -102,7 +102,7 @@ def command(action):
     raise ValueError('Unsupported action')
 
 
-def run_child(argv, timeout_ms, *, cwd='/'):
+def run_child(argv, timeout_ms, *, cwd='/', stdin=None):
     stopping = False
     def stop(*_):
         nonlocal stopping
@@ -111,9 +111,11 @@ def run_child(argv, timeout_ms, *, cwd='/'):
     parent = os.getppid()
     process = None
     try:
-        process = subprocess.Popen(argv,stdin=subprocess.DEVNULL,cwd=cwd,start_new_session=True,
-            env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','USER':'root','LOGNAME':'root',
-                 'LANG':'C.UTF-8','DEBIAN_FRONTEND':'noninteractive'})
+        from .input import input_file
+        with input_file(stdin) as stream:
+            process = subprocess.Popen(argv,stdin=stream,cwd=cwd,start_new_session=True,
+                env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','USER':'root','LOGNAME':'root',
+                     'LANG':'C.UTF-8','DEBIAN_FRONTEND':'noninteractive'})
         started = time.monotonic(); stopping_at = None
         while process.poll() is None:
             if stopping or os.getppid()!=parent or (timeout_ms and (time.monotonic()-started)*1000>=timeout_ms):
@@ -160,7 +162,9 @@ def execute(config, envelope):
         save(path,{**record,'state':'not_started','returncode':126})
         raise
     # Once process creation is attempted, a crash leaves pending/UNKNOWN.
-    code = run_child(command(action), envelope['args'].get('timeout_ms'), cwd=action.get('cwd', '/'))
+    args = envelope['args']
+    code = run_child(command(action), args.get('timeout_ms'), cwd=action.get('cwd', '/'),
+                     **({'stdin': args['stdin']} if args.get('stdin') is not None else {}))
     save(path,{**record,'state':'complete','returncode':code})
     return code if code>=0 else 128-code
 
@@ -180,7 +184,7 @@ def main():
         mode = data.get('mode','execute')
         if mode == 'status':
             protected(Path(config['state_directory']),directory=True)
-            print(json.dumps({'ok':True,'mode':'signed_sudoers','allowed_actions':config['allowed_actions']}))
+            print(json.dumps({'ok':True,'mode':'signed_sudoers','allowed_actions':config['allowed_actions'], 'stdin_version':1}))
             return 0
         if mode == 'query':
             key = digest([config['client_id'],data['runtime_epoch'],data['operation_id']])

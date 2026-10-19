@@ -6,6 +6,22 @@ from pal_shell_native.tools import session_affordances, SESSION_GUIDANCE, RESIDE
 
 
 class NativeContractTests(unittest.TestCase):
+    def test_all_run_contracts_agree_on_optional_stdin_and_pty_conflict(self):
+        import jsonschema
+        from pydantic import ValidationError
+        from pal_shell_native.tools import RunInput
+        from pal_shell_native.capabilities import NativeRunInput, TargetRunInput
+        for model in (RunInput, NativeRunInput, TargetRunInput):
+            for stdin in (None, '', '中文\x00\n$HOME'):
+                args = {'cmd': 'cat', 'stdin': stdin}
+                self.assertEqual(model.model_validate(args).stdin, stdin)
+                jsonschema.validate(args, model.model_json_schema())
+            args = {'cmd': 'cat', 'stdin': '', 'tty': True}
+            with self.assertRaises(ValidationError):
+                model.model_validate(args)
+            with self.assertRaises(jsonschema.ValidationError):
+                jsonschema.validate(args, model.model_json_schema())
+
     def test_session_states_do_not_replay_static_controls(self):
         for sid in (7, 8):
             for status in ('running', 'terminating', 'input_accepted', 'exited', 'cancelled', 'timed_out', 'failed', 'released'):

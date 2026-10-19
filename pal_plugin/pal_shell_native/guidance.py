@@ -34,6 +34,8 @@ RUN_GUIDANCE = ToolGuidance(
         " directly to preserve full output. wait_ms controls response waiting (default five minutes,"
         " one second for a PTY), not process lifetime; timeout_ms sets an optional hard deadline."
         " Use tty=true for interactive terminal input. A session_id identifies retained execution; use status to distinguish running from terminal output."
+        " For finite literal input use stdin with tty=false, for example cmd='python -', stdin=\"print('hello')\\n\". "
+        "stdin is UTF-8 text followed by EOF, without adding a newline; omit it or use null for no supplied input. "
         " Returning control while waiting does not complete the task. Continue independent work or yield until a relevant event. "
         "Completion is delivered separately while the session is watched. "
         + RUNNING_SESSION_GUIDANCE +

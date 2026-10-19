@@ -32,7 +32,14 @@ def parse_apt(command):
 
 
 def normalize(args):
+    from .input import stdin_bytes
+    try:
+        stdin_bytes(args.get('stdin'))
+    except ValueError as exc:
+        raise RemoteError('invalid_stdin', str(exc)) from exc
     if args['action'] == 'shutdown':
+        if args.get('stdin') is not None:
+            raise RemoteError('invalid_request', 'Shutdown does not accept stdin')
         return {'action': 'shutdown', 'packages': []}
     if args['action'] != 'sudo' or args.get('tty'):
         raise RemoteError('privilege_command_unsupported', 'Privileged commands do not accept PTY sessions')

@@ -80,6 +80,30 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def tool(self, tool_name, **args):
         return await self.runtime.execute_tool_async(new_tool_call(name=tool_name, args=args), turn_id='origin')
 
+    async def test_stdin_through_published_local_and_remote_tools(self):
+        text = '中文\n\x00$HOME $(false) EOF'
+        for target in (0, 1):
+            result = await self.tool('run_shell', target=target, cmd='cat', stdin=text)
+            self.assertTrue(result.ok, result.text)
+            self.assertEqual(result.structured['stdout'], text)
+
+    async def test_old_worker_rejects_stdin_before_submission_but_keeps_legacy_calls(self):
+        from unittest.mock import patch
+        original = self.worker.handle
+        async def old_worker(method, args):
+            result = await original(method, args)
+            if method == 'metadata':
+                result.pop('stdin_version', None)
+            return result
+        with patch.object(self.worker, 'handle', side_effect=old_worker):
+            result = await self.tool('run_shell', target=1, cmd='true', stdin='')
+            self.assertFalse(result.ok)
+            self.assertIn('stdin', result.text)
+            self.assertFalse(self.worker.operations)
+            result = await self.tool('run_shell', target=1, cmd='printf legacy')
+            self.assertTrue(result.ok, result.text)
+            self.assertEqual(result.structured['stdout'], 'legacy')
+
     async def transient_tool(self, call, *, turn_id):
         # The plugin consumes this invocation metadata contract. Core's fork
         # and /btw lifecycle are tested by Pal, so these backend tests also run

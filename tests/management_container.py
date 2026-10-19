@@ -97,11 +97,15 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
             result = await asyncio.to_thread(subprocess.run,prefix+args,input=payload,capture_output=True)
             assert result.returncode != 0, 'Unauthenticated/argument-bearing root invocation accepted'
         marker = Path('/var/tmp/pal-approved-command')
+        stdin_marker = Path('/var/tmp/pal-approved-stdin')
+        stdin_text = '  中文\x00\r\n\"\' $HOME $(false) EOF  '
         general = '/usr/bin/id -u > ' + shlex.quote(str(marker))
-        for command, wait in [('apt update', 0), ('apt install bash', 1), ('apt update', 300000), (general, 0)]:
+        for command, wait, stdin in [('apt update', 0, None), ('apt install bash', 1, None),
+                                     ('apt update', 300000, None), (general, 0, None),
+                                     ('cat >> ' + str(stdin_marker), 0, stdin_text)]:
             oid = uuid4().hex
             prepared = await client.request('prepare_privileged',{'operation_id':oid,'target':1,
-                'action':'sudo','cmd':command,'wait_ms':wait})
+                'action':'sudo','cmd':command,'wait_ms':wait, **({'stdin': stdin} if stdin is not None else {})})
             signature = key.sign(canonical(prepared['approval'])).hex()
             if command == general:
                 assert not marker.exists(), 'Root command ran before approval was committed'
@@ -110,6 +114,12 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
                         'args': {**prepared['normalized_args'], 'cmd': 'touch /var/tmp/tampered'},
                         'signature': signature})), capture_output=True)
                 assert bad.returncode != 0, 'Root verifier accepted an altered approved script'
+            if stdin is not None:
+                bad = await asyncio.to_thread(subprocess.run, prefix,
+                    input=base64.b64encode(canonical({'approval': prepared['approval'],
+                        'args': {**prepared['normalized_args'], 'stdin': stdin + 'tampered'},
+                        'signature': signature})), capture_output=True)
+                assert bad.returncode != 0 and not stdin_marker.exists()
             await client.request('commit_privileged',{'operation_id':oid,'signature':signature})
             result = await client.request('query',{'operation_id':oid,'wait_ms':300000},timeout_ms=310000)
             execution = result['result']
@@ -131,6 +141,9 @@ with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', side_
             replay = await asyncio.to_thread(subprocess.run,prefix,input=base64.b64encode(canonical(envelope)),capture_output=True)
             assert replay.returncode == 0, replay.stderr
             assert before == {p.name:p.read_bytes() for p in state.glob('*.json')}
+            if stdin is not None:
+                assert stdin_marker.read_bytes() == stdin.encode(), 'Input changed or replay executed twice'
+                assert stdin_marker.stat().st_uid == 0
             await client.request('release',{'output_id':execution['output_id']})
         print('Real sudoers denial, ordinary elevation guard, signed APT/general root commands, durable replay and worker query passed')
     finally:

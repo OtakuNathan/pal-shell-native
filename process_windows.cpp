@@ -31,7 +31,7 @@ struct Handle {
 };
 }
 Child spawn_child(const std::string& shell, const std::string& command, const std::string& cwd,
-                  bool tty, int stdout_fd, int, bool, bool) {
+                  bool tty, int stdout_fd, int, bool, bool, int stdin_fd) {
     if (tty) throw std::runtime_error("pty_unsupported: Windows prototype has no ConPTY");
     // Keep the approved script beside this session's private output, not in argv.
     wchar_t output[32768];
@@ -50,7 +50,12 @@ Child spawn_child(const std::string& shell, const std::string& command, const st
     check(CreatePipe(&err_read.h, &err_write.h, &sa, 0), "stderr pipe");
     check(SetHandleInformation(out_read.h, HANDLE_FLAG_INHERIT, 0), "stdout ownership");
     check(SetHandleInformation(err_read.h, HANDLE_FLAG_INHERIT, 0), "stderr ownership");
-    input.h = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    if (stdin_fd >= 0) {
+        check(DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(_get_osfhandle(stdin_fd)),
+                              GetCurrentProcess(), &input.h, 0, TRUE, DUPLICATE_SAME_ACCESS), "stdin inheritance");
+    } else {
+        input.h = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    }
     check(input.h != INVALID_HANDLE_VALUE, "stdin");
     job.h = CreateJobObjectW(nullptr, nullptr); check(job.h != nullptr, "job creation");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};

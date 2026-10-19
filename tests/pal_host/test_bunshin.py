@@ -438,7 +438,7 @@ async def main():
     runtime = core.context.execution_runtime
     try:
         runtime.build_introspection_provider()
-        result = await runtime.shell_owner.shell.run('printf SANDBOX_NATIVE_OK')
+        result = await runtime.shell_owner.shell.run('cat', stdin='SANDBOX_NATIVE_OK')
         print(result['stdout'])
         assert not os.path.exists(os.environ['PAL_TEST_HIDDEN'])
     finally:

@@ -12,11 +12,24 @@ from .guidance import RUN_GUIDANCE, SESSION_GUIDANCE, REMOTE_RUN_GUIDANCE, RESID
 
 
 class RunInput(StrictToolModel):
+    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra={"allOf": [{
+        "if": {"required": ["stdin"], "properties": {"stdin": {"type": "string"}}},
+        "then": {"properties": {"tty": {"const": False}}},
+    }]})
     cmd: str = Field(min_length=1)
+    stdin: str | None = Field(default=None, description="Optional literal UTF-8 standard input, followed by EOF. No newline is added. Omit or null means no supplied input. Requires tty=false; use this for scripts instead of a heredoc.")
     cwd: str = Field(default="", description="Working directory on the execution target; ~ expands to that account’s home.")
     tty: bool = False
     wait_ms: int | None = Field(default=None, ge=0, le=300000)
     timeout_ms: int | None = Field(default=None, ge=1, le=2147483647)
+
+    @model_validator(mode="after")
+    def validate_stdin(self):
+        from .inputs import validate_stdin
+        validate_stdin(self.stdin)
+        if self.stdin is not None and self.tty:
+            raise ValueError("stdin requires tty=false")
+        return self
 
 
 def session_argument_schema():

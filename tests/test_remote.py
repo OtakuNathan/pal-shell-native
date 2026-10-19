@@ -46,6 +46,174 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
     async def query(self, oid, client=None):
         return await (client or self.client).request('query', {'operation_id': oid, 'wait_ms': 5000}, timeout_ms=6000)
 
+    async def test_literal_stdin_roundtrip_replay_and_conflict(self):
+        info = await self.client.request('metadata', {})
+        self.assertEqual(info['stdin_version'], 1)
+        for text in ('', '  中文\x00\n\r\n\"\' $HOME $(false) EOF  '):
+            args = {'operation_id': uuid4().hex, 'cmd': 'cat', 'stdin': text, 'wait_ms': 5000}
+            await self.client.request('submit', args)
+            first = await self.query(args['operation_id'])
+            self.assertEqual(first['result']['returncode'], 0, first)
+            self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+            other = await self.connect()
+            await other.request('submit', args)
+            self.assertEqual(await self.query(args['operation_id'], other), first)
+            chunk = await other.request('output', {'snapshot': first['result']['snapshot'], 'stream': 'stdout'})
+            self.assertEqual(chunk['data'], text.encode())
+            with self.assertRaises(RemoteError) as conflict:
+                await other.request('submit', {**args, 'stdin': text + 'changed'})
+            self.assertEqual(conflict.exception.code, 'operation_conflict')
+            await self.client.request('release', {'output_id': first['result']['output_id']})
+            await other.request('submit', args)
+            self.assertEqual(await self.query(args['operation_id'], other), first)
+            self.assertFalse(self.worker.outputs)
+
+    async def test_stdin_is_released_while_child_keeps_its_input(self):
+        import shlex
+        gate = self.path / 'read-input'
+        args = {'operation_id': uuid4().hex,
+                'cmd': f'while [ ! -f {shlex.quote(str(gate))} ]; do sleep .01; done; wc -c',
+                'stdin': 'x' * 900000, 'wait_ms': 0}
+        await self.client.request('submit', args)
+        initial = await self.query(args['operation_id'])
+        self.assertEqual(initial['result']['status'], 'running')
+        self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+        await self.client.request('submit', args)
+        self.assertEqual(await self.query(args['operation_id']), initial)
+        with self.assertRaises(RemoteError) as changed:
+            await self.client.request('submit', {**args, 'stdin': 'changed'})
+        self.assertEqual(changed.exception.code, 'operation_conflict')
+        gate.touch()
+        read = uuid4().hex
+        await self.client.request('session', {'operation_id': read, 'session_id': initial['result']['session_id'],
+                                            'action': 'read', 'wait_ms': 5000})
+        final = (await self.query(read))['result']
+        self.assertEqual(final['returncode'], 0, final)
+        chunk = await self.client.request('output', {'snapshot': final['snapshot'], 'stream': 'stdout'})
+        self.assertEqual(int(chunk['data']), len(args['stdin']))
+        await self.client.request('release', {'output_id': final['output_id']})
+
+    async def test_stdin_does_not_accumulate_in_completed_journal_entries(self):
+        for i in range(12):
+            oid = uuid4().hex
+            await self.client.request('submit', {'operation_id': oid, 'cmd': 'true',
+                                                'stdin': str(i).ljust(900000, 'x'), 'wait_ms': 5000})
+            result = (await self.query(oid))['result']
+            self.assertEqual(result['returncode'], 0)
+            await self.client.request('release', {'output_id': result['output_id']})
+        self.assertFalse(self.worker.outputs)
+        self.assertFalse(self.worker.reservations)
+        self.assertEqual(len(self.worker.operations), 12)
+        self.assertFalse(any('stdin' in op.args for op in self.worker.operations.values()))
+
+    async def test_rejected_and_unknown_requests_release_stdin_without_allowing_replay(self):
+        from unittest.mock import patch, AsyncMock
+        for error in (RemoteError('test_rejection', 'Not started'), RuntimeError('unknown native outcome')):
+            with self.subTest(error=type(error).__name__):
+                args = {'operation_id': uuid4().hex, 'cmd': 'true', 'stdin': 'x' * 300000}
+                with patch.object(self.worker, '_native', AsyncMock(side_effect=error)) as launch:
+                    await self.client.request('submit', args)
+                    first = await self.query(args['operation_id'])
+                    self.assertEqual(first['state'], 'failed')
+                    self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+                    await self.client.request('submit', args)
+                    self.assertEqual(await self.query(args['operation_id']), first)
+                    self.assertEqual(launch.await_count, 1)
+
+    async def test_admission_failure_releases_stdin_without_launching(self):
+        from unittest.mock import patch, AsyncMock
+        args = {'operation_id': uuid4().hex, 'cmd': 'true', 'stdin': 'x' * 300000}
+        self.worker.draining = True
+        with patch.object(self.worker, '_native', AsyncMock()) as launch:
+            first = await self.client.request('submit', args)
+            self.assertEqual(first['error']['code'], 'worker_draining')
+            self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+            self.worker.draining = False
+            self.assertEqual(await self.client.request('submit', args), first)
+            launch.assert_not_awaited()
+
+    async def test_large_stdin_and_invalid_or_unsupported_input(self):
+        from unittest.mock import patch
+        import _pal_shell_runtime as native
+        args = {'operation_id': uuid4().hex, 'cmd': 'wc -c', 'stdin': 'x' * 300000, 'wait_ms': 5000}
+        await self.client.request('submit', args)
+        result = (await self.query(args['operation_id']))['result']
+        chunk = await self.client.request('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+        self.assertEqual(int(chunk['data']), 300000)
+        await self.client.request('release', {'output_id': result['output_id']})
+        for extra, code in [({'stdin': '', 'tty': True}, 'stdin_pty_conflict'), ({'stdin': 3}, 'invalid_stdin')]:
+            oid = uuid4().hex
+            with self.assertRaises(RemoteError) as rejected:
+                await self.client.request('submit', {'operation_id': oid, 'cmd': 'true', **extra})
+            self.assertEqual(rejected.exception.code, code)
+            self.assertNotIn(oid, self.worker.operations)
+        with patch.object(native, 'STDIN_VERSION', 0):
+            with self.assertRaises(RemoteError) as rejected:
+                await self.client.request('submit', {'operation_id': uuid4().hex, 'cmd': 'true', 'stdin': ''})
+            self.assertEqual(rejected.exception.code, 'stdin_unsupported')
+            oid = await self.submit('true', wait=5000)
+            self.assertEqual((await self.query(oid))['result']['returncode'], 0)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux management')
+    async def test_privileged_stdin_capability_signature_and_launcher(self):
+        import base64
+        import json
+        from dataclasses import replace
+        from unittest.mock import patch, AsyncMock
+        from pal_shell_worker.protocol import canonical
+        from pal_shell_worker.management_helper import verify
+        self.worker.config = replace(self.worker.config, management_helper='/usr/bin/true',
+                                     management_actions=('shell_command',))
+        args = {'operation_id': uuid4().hex, 'action': 'sudo', 'target': 1,
+                'cmd': 'cat', 'stdin': '中文\x00\n$HOME EOF', 'wait_ms': 5000}
+        status = {'ok': True, 'allowed_actions': ['shell_command']}
+        with patch('pal_shell_worker.privilege.management_status', AsyncMock(return_value=status)):
+            with self.assertRaises(RemoteError) as old:
+                await self.client.request('prepare_privileged', args)
+            self.assertEqual(old.exception.code, 'stdin_unsupported')
+            self.assertNotIn(args['operation_id'], self.worker.operations)
+        status['stdin_version'] = 1
+        with patch('pal_shell_worker.privilege.management_status', AsyncMock(return_value=status)):
+            prepared = await self.client.request('prepare_privileged', args)
+            self.assertEqual(self.worker.operations[args['operation_id']].args['stdin'], args['stdin'])
+            with self.assertRaises(RemoteError) as changed:
+                await self.client.request('prepare_privileged', {**args, 'stdin': 'changed'})
+            self.assertEqual(changed.exception.code, 'operation_conflict')
+            with self.assertRaises(RemoteError) as large:
+                await self.client.request('prepare_privileged', {**args, 'operation_id': uuid4().hex, 'stdin': 'x' * 65536})
+            self.assertEqual(large.exception.code, 'privilege_command_unsupported')
+            original = self.worker._native
+            launches = []
+            async def harmless(method, *launch):
+                launches.append((method, launch))
+                self.assertEqual(method, 'run_limited_authorized_with_stdin')
+                self.assertNotIn('printf', launch[1])
+                envelope = json.loads(base64.b64decode(launch[-1]))
+                verify({'client_public_key': self.key.public_key().public_bytes_raw().hex(),
+                        'client_id': 'test-client', 'worker_id': 'test-worker', 'target': 1,
+                        'allowed_actions': ['shell_command']}, envelope)
+                return await original('run_limited_with_stdin', '/bin/sh', 'cat', '', False,
+                                      5000, 0, 0, 4096, envelope['args']['stdin'])
+            with patch.object(self.worker, '_native', side_effect=harmless):
+                signature = self.key.sign(canonical(prepared['approval'])).hex()
+                await self.client.request('commit_privileged', {'operation_id': args['operation_id'], 'signature': signature})
+                result = (await self.query(args['operation_id']))['result']
+                self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+                await self.client.request('commit_privileged', {'operation_id': args['operation_id'], 'signature': signature})
+                replay = await self.client.request('prepare_privileged', args)
+                self.assertEqual(replay['approval'], prepared['approval'])
+                self.assertEqual(replay['normalized_args']['stdin'], args['stdin'])
+                self.assertNotIn('stdin', self.worker.operations[args['operation_id']].args)
+            self.assertEqual(len(launches), 1)
+            chunk = await self.client.request('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+            self.assertEqual(chunk['data'], args['stdin'].encode())
+            expired = {**args, 'operation_id': uuid4().hex}
+            await self.client.request('prepare_privileged', expired)
+            self.worker.operations[expired['operation_id']].expires_at = 0
+            rejected = await self.client.request('commit_privileged', {'operation_id': expired['operation_id']})
+            self.assertEqual(rejected['error']['code'], 'approval_expired')
+            self.assertNotIn('stdin', self.worker.operations[expired['operation_id']].args)
+
     @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux management')
     async def test_general_privilege_requires_worker_and_installed_policy(self):
         from dataclasses import replace
@@ -298,24 +466,26 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         original = self.worker._native
         gate = self.worker.config.socket_path.parent/'finish-privileged-test'
         async def harmless(method, *args):
-            if method == 'run_limited_authorized':
+            if method in {'run_limited_authorized', 'run_limited_authorized_with_stdin'}:
                 args = list(args)
                 args[1] = 'while [ ! -f ' + shlex.quote(str(gate)) + ' ]; do sleep .01; done'
             return await original(method, *args)
         self.worker._native = harmless  # Exercise real Runtime/session; never invoke sudo.
         with patch('pal_shell_worker.privilege.management_status',
-                   AsyncMock(return_value={'ok':True,'allowed_actions':['apt_update']})):
-            for wait, consume in ((0, True), (1, True), (0, False)):
+                   AsyncMock(return_value={'ok':True,'allowed_actions':['apt_update'], 'stdin_version':1})):
+            for wait, consume, stdin in ((0, True, None), (1, True, None), (0, False, None),
+                                         (0, True, ''), (1, True, 'approved input'), (0, False, 'approved input')):
                 gate.unlink(missing_ok=True)
                 oid = uuid4().hex
                 prepared = await self.client.request('prepare_privileged', {'operation_id':oid,
-                    'action':'sudo','target':1,'cmd':'apt update','wait_ms':wait})
+                    'action':'sudo','target':1,'cmd':'apt update','wait_ms':wait, 'stdin':stdin})
                 signed = {'approval':prepared['approval'],
                           'signature':self.key.sign(canonical(prepared['approval'])).hex()}
                 await self.client.request('commit_privileged', {'operation_id':oid,'signature':signed['signature']})
                 response = await self.query(oid)
                 self.assertEqual(response['state'], 'complete')
                 self.assertEqual(response['result']['status'], 'running')
+                self.assertNotIn('stdin', self.worker.operations[oid].args)
                 with self.assertRaises(RemoteError) as renewal:
                     await self.client.request('session', {'operation_id': uuid4().hex,
                         'session_id': response['result']['session_id'], 'action': 'extend', 'extend_by_ms': 1000})
@@ -358,6 +528,35 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['shell']['invocation'], ['-lc'])
         self.assertIn('worker_arch', data)
         self.assertIn('available_bytes', data['memory'])
+
+    async def test_askpass_binds_stdin_digest_to_the_protected_helper_invocation(self):
+        import base64
+        import os
+        import time
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pal_shell_worker.askpass import authorize
+        from pal_shell_worker.privilege import approval_payload
+        from pal_shell_worker.protocol import canonical, encode
+        from pal_shell_worker.input import stdin_identity
+        params = {'action': 'sudo', 'target': 1, 'cmd': 'cat', 'stdin': '中文\x00$HOME'}
+        op, _ = self.worker._record(uuid4().hex, 'privileged', params)
+        op.nonce, op.expires_at = 'nonce', time.time() + 60
+        grant = approval_payload(self.worker, op)
+        envelope = {'args': params, 'approval': grant, 'signature': self.key.sign(canonical(grant)).hex()}
+        config = {'client_public_key': self.worker.config.client_public_key, 'worker_id': 'test-worker',
+                  'client_id': 'test-client', 'privilege_helper': '/protected/helper',
+                  'shell': '/bin/bash', 'worker_socket': '/unused/socket'}
+        length, digest = stdin_identity(params['stdin'])
+        for actual_digest, accepted in ((digest, True), ('0' * 64, False)):
+            observed = f'0 /usr/bin/sudo -A -k -- /protected/helper /bin/bash cat {length} {actual_digest}'
+            with patch.dict(os.environ, {'PAL_SHELL_APPROVAL': base64.urlsafe_b64encode(canonical(envelope)).decode()}), \
+                 patch('pal_shell_worker.askpass.os.getppid', return_value=123), \
+                 patch('pal_shell_worker.askpass.subprocess.run', return_value=SimpleNamespace(stdout=observed.encode())), \
+                 patch('pal_shell_worker.askpass.socket.socket'), \
+                 patch('_pal_shell_rpc.exchange', return_value=encode({'ok': True, 'result': {'authorized': True}})) as exchange:
+                self.assertEqual(authorize(config), accepted)
+                self.assertEqual(exchange.call_count, int(accepted))
 
 
 if __name__ == '__main__':

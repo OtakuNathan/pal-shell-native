@@ -86,8 +86,18 @@ class NativeSkillTests(unittest.TestCase):
             with self.subTest(module=module), patch.dict(sys.modules, {module: None}):
                 result = verify(None)
                 self.assertFalse(result['ok'])
-                self.assertIn('9d8cbe906906522e1f4a0d2a50a709385a4209f3', result['detail'])
+                self.assertIn('3bfc54b60cbdf0830c66d0b8751f5f9999b26b7f', result['detail'])
                 self.assertIn(module, result['detail'])
+
+    def test_install_and_activation_require_background_admission(self):
+        import runpy
+        from unittest.mock import patch
+        from pal_shell_native.plugin import NativeExtension
+        verify = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'pal_plugin/hooks.py'))['verify']
+        with patch.object(PalCore, 'start_background_turn', None):
+            self.assertFalse(verify(None)['ok'])
+            with self.assertRaisesRegex(RuntimeError, 'background turn admission'):
+                NativeExtension('/tmp').build_runtime(None)
 
     def test_package_verification_rejects_host_without_enum_field_discovery(self):
         import runpy

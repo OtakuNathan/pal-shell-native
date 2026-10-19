@@ -50,8 +50,10 @@ class ShellApprovals:
         management = args.get('management')
         approved_command = (str(management['action']) + ' ' + ' '.join(management.get('packages', []))) if management and management['action'] != 'shell_command' else args.get('cmd', 'shutdown')
         directory = management.get('cwd') if management and management['action'] == 'shell_command' else args.get('cwd')
+        stdin = args.get('stdin')
+        input_text = '' if stdin is None else f"\n\nStandard input ({len(stdin.encode('utf-8'))} UTF-8 bytes, then EOF):\n{stdin}"
         text = (f"{request.title}\n{request.impact}\nRuntime: {approval['runtime_epoch']}\n"
-                f"Directory: {directory or '(worker default)'}\n\n{approved_command}\n\n"
+                f"Directory: {directory or '(worker default)'}\n\n{approved_command}{input_text}\n\n"
                 "Approval applies to this request only. Execution results are reported separately.")
         interaction = InteractionMessageSpec(identifier, 'approval_request', route, text,
             ((button('Approve once', 'accept'), button('Reject', 'reject')),),

@@ -64,7 +64,7 @@ std::vector<int> inherited_fds() {
 
 Child spawn_child(const std::string& shell, const std::string& command,
                   const std::string& cwd, bool tty, int stdout_fd, int stderr_fd,
-                  bool capture, bool allow_privilege) {
+                  bool capture, bool allow_privilege, int stdin_fd) {
     Fds owned;
     int output[2] = {-1, stdout_fd}, exec_error[2];
     int errors[2] = {-1, stderr_fd};
@@ -76,9 +76,12 @@ Child spawn_child(const std::string& shell, const std::string& command,
         owned.pair(output[0], output[1]);
         input = output[1];
     } else {
-        input = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        if (input < 0) throw std::system_error(errno, std::generic_category());
-        owned.add(input);
+        input = stdin_fd;
+        if (input < 0) {
+            input = open("/dev/null", O_RDONLY | O_CLOEXEC);
+            if (input < 0) throw std::system_error(errno, std::generic_category());
+            owned.add(input);
+        }
         if (capture) { owned.pipe(output); owned.pipe(errors); }
     }
     owned.pipe(exec_error);

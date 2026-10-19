@@ -75,6 +75,36 @@ class ManagementTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 helper.verify(config, changed)
 
+    def test_stdin_signature_and_replay_bind_the_exact_input(self):
+        envelope = self.shell_envelope('python -')
+        text = 'print("中文 $HOME")\n'
+        envelope['args']['stdin'] = text
+        envelope['approval']['fingerprint'] = digest(['privileged', envelope['args']])
+        envelope['signature'] = self.key.sign(canonical(envelope['approval'])).hex()
+        config = {**self.config, 'allowed_actions': ['shell_command']}
+        helper.verify(config, envelope)
+        for value in ('', text + '\n', None):
+            changed = copy.deepcopy(envelope)
+            changed['args']['stdin'] = value
+            with self.assertRaises(ValueError):
+                helper.verify(config, changed)
+        with tempfile.TemporaryDirectory() as directory:
+            config['state_directory'] = directory
+            with patch.object(helper, 'protected'), patch.object(helper, 'consume'), \
+                 patch.object(helper, 'run_child', return_value=0) as run:
+                helper.execute(config, envelope)
+                helper.execute(config, envelope)
+                run.assert_called_once_with(['/bin/sh', '-c', 'python -'], None, cwd='/tmp', stdin=text)
+
+    def test_helper_child_receives_input_and_eof_without_a_pipe_writer(self):
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'input'
+            source = f'import sys,pathlib;pathlib.Path({str(output)!r}).write_bytes(sys.stdin.buffer.read())'
+            text = '中文\x00\r\n$HOME ' * 20000
+            self.assertEqual(helper.run_child([sys.executable, '-c', source], 5000, stdin=text), 0)
+            self.assertEqual(output.read_bytes(), text.encode())
+
     def test_general_replay_executes_once_in_approved_directory(self):
         envelope = self.shell_envelope('id; pwd', '/var/tmp')
         with tempfile.TemporaryDirectory() as directory:

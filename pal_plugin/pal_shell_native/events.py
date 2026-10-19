@@ -6,6 +6,7 @@ from dataclasses import replace
 from pal.core.turns import (
     TurnContinuation, agent_turn_program, L1CommitPayload, MailboxReplyEffect,
 )
+from pal.core.scheduling import ResidentTurnKind
 from pal.foundation import EventEnvelope
 from pal.llm.ir import LLMMessageIR, MessageRole, TextPartIR
 from pal.memory import L1MessageKind, L1TranscriptMessage
@@ -121,12 +122,14 @@ class ShellCompletionSource:
                 return []
             continuation = TurnContinuation(turn_id=opening.event_id, opening_event=opening,
                 delivery_binding=session["binding"], program=iter(()), correlation_id=f"shell:{sid}")
-            task = asyncio.create_task(self._run(sid, continuation))
+            task = self.core.start_background_turn(
+                continuation, lambda: self._run(sid, continuation), kind=ResidentTurnKind.BACKGROUND)
+            if task is None:
+                self.owner.observations.release_claim(sid, claim[1])
+                self.in_flight.discard(sid)
+                return []
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
-            self.core.state.active_turn_id = continuation.turn_id
-            self.core.state.resident_drained_event.clear()
-            self.core.track_turn_task(continuation, task)
         return []
 
     async def _run(self, sid, continuation):
@@ -231,8 +234,6 @@ class ShellCompletionSource:
                 self.owner.observations.release_claim(sid, completion)
             self.in_flight.discard(sid)
             self.core.turn_manager._mark_turn_exited(continuation.turn_id)
-            if not self.owner.closed:
-                await self.core._start_next_queued_turn_async()
             self.owner.notify()
 
     def retry(self, sid):

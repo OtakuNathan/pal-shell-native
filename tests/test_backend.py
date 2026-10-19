@@ -44,6 +44,37 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(event['stderr_bytes'], b'error')
         self.call('release_output', event['output_id'])
 
+    def test_finite_stdin_is_literal_and_all_launch_paths_preserve_it(self):
+        self.assertEqual(native.STDIN_VERSION, 1)
+        for method in ('run_with_stdin', 'run_limited_with_stdin',
+                       'run_authorized_with_stdin', 'run_limited_authorized_with_stdin'):
+            for text in ('', '  中文\x00\n\r\n\"\' $HOME $(false) EOF  '):
+                with self.subTest(method=method, text=text):
+                    args = ['/bin/sh', 'cat', '', False, 5000, 0, 4096]
+                    if 'limited' in method:
+                        args.append(65536)
+                    event = self.call(method, *args, text)
+                    self.assertEqual(event['returncode'], 0, event)
+                    self.assertEqual(event['stdout_bytes'], text.encode())
+                    self.call('release_output', event['output_id'])
+
+    def test_large_stdin_does_not_block_unread_or_early_exiting_child(self):
+        text = 'x' * 300000
+        for command, expected in [('wc -c', 0), ('exit 7', 7), ('sleep 10', None)]:
+            timeout = 100 if expected is None else 5000
+            event = self.call('run_with_stdin', '/bin/sh', command, '', False, 5000, timeout, 4096, text)
+            if expected is None:
+                self.assertEqual(event['status'], 'timed_out', event)
+            else:
+                self.assertEqual(event['returncode'], expected, event)
+                if command == 'wc -c':
+                    self.assertEqual(int(event['stdout_bytes']), len(text))
+            self.call('release_output', event['output_id'])
+
+    def test_stdin_pty_conflict_rejects_before_execution(self):
+        with self.assertRaisesRegex(RuntimeError, 'stdin_pty_conflict'):
+            self.runtime.run_with_stdin(next(self.ids), '/bin/sh', 'true', '', True, 5000, 0, 4096, '')
+
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux privilege gate')
     def test_ordinary_children_cannot_clear_privilege_gate(self):
         source = ('import ctypes,pathlib; '

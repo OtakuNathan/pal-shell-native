@@ -9,6 +9,7 @@ import secrets
 import shlex
 import time
 import sys
+import subprocess
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -34,6 +35,28 @@ def approval_payload(worker, op):
             'worker_id': worker.config.worker_id, 'runtime_epoch': worker.epoch,
             'operation_id': op.operation_id, 'fingerprint': op.fingerprint,
             'nonce': op.nonce, 'expires_at': op.expires_at, 'target': op.args['target']}
+
+
+async def privileged_stdin_version(worker):
+    import _pal_shell_runtime as native
+    if getattr(native, 'STDIN_VERSION', 0) != 1:
+        return 0
+    if sys.platform.startswith('linux'):
+        probe = worker.management_probe or {}
+        return 1 if probe.get('ok') and probe.get('stdin_version') == 1 else 0
+    if sys.platform == 'darwin' and trusted_executable(worker.config.privilege_helper):
+        if worker.privilege_stdin_probe is not None:
+            return worker.privilege_stdin_probe
+        try:
+            result = await asyncio.to_thread(subprocess.run,
+                [worker.config.privilege_helper, '--stdin-capabilities'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=2, check=False)
+            worker.privilege_stdin_probe = 1 if result.returncode == 0 and result.stdout == b'1\n' else 0
+            return worker.privilege_stdin_probe
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return 0
 
 
 async def execute_privileged(worker, op):
@@ -69,12 +92,16 @@ async def execute_privileged(worker, op):
         # authentication stdin with the approved child command, even on cache hits.
         envelope = {'approval': approval_payload(worker, op), 'args': op.args, 'signature': op.approval_signature}
         grant = base64.urlsafe_b64encode(canonical(envelope)).decode()
+        from .input import stdin_identity
+        identity = stdin_identity(args.get('stdin'))
         command = 'exec ' + shlex.join(['/usr/bin/env', 'SUDO_ASKPASS=' + worker.config.askpass_helper,
             'PAL_SHELL_APPROVAL=' + grant,
             '/usr/bin/sudo', '-A', '-k', '--', worker.config.privilege_helper,
-            worker.config.shell, args['cmd']])
-        result = await worker._native('run_limited_authorized', worker.config.shell, command, args.get('cwd', ''),
-            False, args.get('wait_ms', 300000), args.get('timeout_ms') or 0, 0, worker.config.output_limit)
+            worker.config.shell, args['cmd'], *([str(identity[0]), identity[1]] if identity is not None else [])])
+        result = await worker._native('run_limited_authorized_with_stdin' if identity is not None else 'run_limited_authorized',
+            worker.config.shell, command, args.get('cwd', ''),
+            False, args.get('wait_ms', 300000), args.get('timeout_ms') or 0, 0, worker.config.output_limit,
+            *((args['stdin'],) if identity is not None else ()))
         worker.native_owners[result['output_id']] = op.operation_id
         snapshot = worker._snapshot(result)
         if result['output_id'] in worker.events:
@@ -93,8 +120,17 @@ async def handle_privileged(worker, method, args):
     if method == 'prepare_privileged':
         params = {k: v for k, v in args.items() if k != 'operation_id'}
         action = params.get('action')
-        if action not in {'sudo', 'shutdown'} or set(params) - {'action', 'target', 'cmd', 'cwd', 'wait_ms', 'timeout_ms', 'protected_machine_id'}:
+        if action not in {'sudo', 'shutdown'} or set(params) - {'action', 'target', 'cmd', 'cwd', 'wait_ms', 'timeout_ms', 'protected_machine_id', 'stdin'}:
             raise RemoteError('invalid_request', 'Unsupported privilege request')
+        from .input import stdin_bytes
+        try:
+            stdin_bytes(params.get('stdin'))
+        except ValueError as exc:
+            raise RemoteError('invalid_stdin', str(exc)) from exc
+        if params.get('stdin') is None:
+            params.pop('stdin', None)
+        elif action != 'sudo':
+            raise RemoteError('invalid_request', 'Shutdown does not accept stdin')
         from .protocol import integer
         integer(params.get('target'), 'target', 1)
         if action == 'sudo':
@@ -118,19 +154,22 @@ async def handle_privileged(worker, method, args):
             if params['management']['action'] not in worker.config.management_actions or not trusted_executable(worker.config.management_helper):
                 raise RemoteError('management_unavailable', 'Install the signed management helper and enable this action')
             installed = await management_status(worker)
+            worker.management_probe = installed
             if not installed.get('ok') or params['management']['action'] not in installed.get('allowed_actions', []):
                 raise RemoteError('management_unavailable', 'Signed management installation is not ready; run the remote setup instructions')
+        if params.get('stdin') is not None and await privileged_stdin_version(worker) != 1:
+            raise RemoteError('stdin_unsupported', 'Update the worker and protected helper to support stdin')
         op, fresh = worker._record(args.get('operation_id'), 'privileged', params)
         if fresh:
             op.state = 'approval_required'
             op.nonce, op.expires_at = secrets.token_hex(32), time.time() + 600
-            if sys.platform.startswith('linux'):
+            if sys.platform.startswith('linux') or params.get('stdin') is not None:
                 from .management import MAX_ENVELOPE_BYTES
                 envelope = {'approval': approval_payload(worker, op), 'args': params, 'signature': '0' * 128}
                 if len(base64.b64encode(canonical(envelope))) > MAX_ENVELOPE_BYTES:
                     worker.operations.pop(op.operation_id, None)
                     raise RemoteError('privilege_command_unsupported',
-                        'Approved command envelope exceeds 64 KiB; shorten the script or working directory')
+                        'Approved command envelope exceeds 64 KiB; shorten the command, stdin or working directory')
         return {**op.snapshot(), 'approval': approval_payload(worker, op), 'normalized_args': params}
     op = worker.operations.get(text(args.get('operation_id'), 'operation_id', limit=128))
     if op is None or op.method != 'privileged':
@@ -202,8 +241,12 @@ async def execute_management(worker, op):
             raise RemoteError('shutdown_unconfirmed', 'Management helper did not confirm shutdown; query the original operation', effect='unknown')
         worker._finish(op, {'status':'accepted','operation_id':op.operation_id,'runtime_epoch':worker.epoch,'power_state':'unconfirmed'})
         return
-    result = await worker._native('run_limited_authorized', '/bin/sh', command, '', False,
-        op.args.get('wait_ms',300000),op.args.get('timeout_ms') or 0,0,worker.config.output_limit)
+    if op.args.get('stdin') is not None:
+        command = 'exec ' + shlex.join(['/usr/bin/sudo', '-n', '--', worker.config.management_helper])
+    result = await worker._native('run_limited_authorized_with_stdin' if op.args.get('stdin') is not None else 'run_limited_authorized',
+        '/bin/sh', command, '', False,
+        op.args.get('wait_ms',300000),op.args.get('timeout_ms') or 0,0,worker.config.output_limit,
+        *((payload,) if op.args.get('stdin') is not None else ()))
     worker.native_owners[result['output_id']] = op.operation_id
     snapshot = worker._snapshot(result)
     if result['output_id'] in worker.events:

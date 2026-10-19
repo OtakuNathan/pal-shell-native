@@ -10,14 +10,51 @@ Attaching replaces Pal's built-in shell through the generic execution extension
 port. Detaching restores the built-in shell after outstanding work is settled.
 Installing the wheel alone does not activate Native shell.
 
+## Literal standard input
+
+`run_shell` shares `cmd`, `cwd`, `target`, `stdin`, and `timeout_ms` with Pal's
+built-in shell. `target` defaults to `0` (local); the built-in backend rejects
+other targets before execution. Native also retains its session and privilege
+options, including `tty`, `wait_ms`, and `sudo`.
+
+```json
+{"cmd": "python3 -", "target": 0, "stdin": "print('hello')\n"}
+```
+
+`stdin` is optional UTF-8 text followed by EOF. Omit it or use `null` for no
+supplied input; `""` supplies empty input. Bytes, including whitespace and NUL,
+are preserved without adding a newline. Supplying input requires `tty=false`.
+Input is a finite temporary file inherited by the command, not a live input
+session; shell redirections still follow the selected shell's ordinary rules.
+Use `write_shell_session` for interactive PTY input.
+
+Version 0.5.0 adds native `STDIN_VERSION=1` and worker metadata `stdin_version=1`
+while preserving native API 2 and remote protocol 3. Calls without input continue
+to work with older compatible workers. Calls with input check capability before
+submission and fail without execution if the worker or protected helper lacks
+support. Remote operation identities and privilege approvals bind the exact
+input. Existing RPC-frame and approval-envelope size limits still apply; input
+is never silently truncated. Approval cards include the supplied input.
+The worker drops stdin from its operation journal after the initial execution
+result or failure. A running child keeps its input file; replay checks keep the
+original fingerprint without retaining the input body.
+
+Upgrade the host wheel, plugin and worker bundle together. For privileged input,
+also update the root-owned management bundle on Linux or the privilege monitor
+and askpass installation on macOS, preserving policy and operation journals.
+Settle active sessions and retained outputs before activation. Native extensions
+already loaded into Pal require a host restart; worker binaries require their
+own restart. Installing files or reloading Python plugin code alone does not
+replace an already loaded native extension.
+
 ## Compatibility
 
-- Backend 0.4.2 exports `_pal_shell_runtime`, `API_VERSION = 2`.
+- Backend 0.5.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Known compatible Pal baseline: commit
-  `9d8cbe906906522e1f4a0d2a50a709385a4209f3` (indexed L1 request visibility, execution extensions, shared diagnostics, Bunshin verification, and enum-field tool discovery).
+  `3bfc54b60cbdf0830c66d0b8751f5f9999b26b7f` (indexed L1 request visibility, execution extensions, shared diagnostics, Bunshin verification, enum-field tool discovery, and background turn admission).
   Compatible later versions must preserve these host contracts, including
   `pal.shared.diagnostics`, `pal.bunshin.verification_builder`, and
-  `ToolGuidance.search_enum_fields`.
+  `ToolGuidance.search_enum_fields` and `PalCore.start_background_turn`.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a
   matching Python/glibc. Use pip to check tags; never rename an incompatible wheel.
@@ -38,24 +75,24 @@ happens to be on PATH. In a Pal virtual environment, installation is:
 
 ```bash
 PAL_PYTHON=/absolute/path/to/pal-venv/bin/python
-"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.4.2-MATCHING_TAGS.whl
+"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.5.0-MATCHING_TAGS.whl
 "$PAL_PYTHON" -c 'import _pal_shell_runtime as n; print(n.__file__, n.API_VERSION)'
 "$PAL_PYTHON" /absolute/path/to/test_backend.py
 ```
 
 If Pal deliberately uses an OS-managed Python, do not override its package
 protections. Instead install with `--target` into a **new versioned directory**
-under the actual runtime root (for example `<runtime-root>/native/shell-runtime/0.4.2`).
+under the actual runtime root (for example `<runtime-root>/native/shell-runtime/0.5.0`).
 Test that directory with the same interpreter and a temporary `PYTHONPATH`; then
 add it to Pal's launch environment, preserving its existing import paths.
 Check `n.__file__` to detect any older `.so` shadowing the new installation.
 Do not overwrite or unload a binary already mapped by a running process.
 
-Install `plugin-remote-0.4.2.palpkg` using Pal's package installation flow. For
+Install `plugin-remote-0.5.0.palpkg` using Pal's package installation flow. For
 offline preparation:
 
 ```sh
-pal package install /absolute/path/to/plugin-remote-0.4.2.palpkg --runtime-root <runtime-root>
+pal package install /absolute/path/to/plugin-remote-0.5.0.palpkg --runtime-root <runtime-root>
 ```
 
 The package retains the `remote` plugin ID for upgrades from 0.4.0. Its entrypoint
@@ -244,7 +281,7 @@ install matching binaries before activation. Approved launchers skip login scrip
 
 ## Multiplexed transport and upgrades
 
-Install matching 0.4.2 wheel, worker and palpkg: protocol-v3 negotiation rejects an
+Install matching 0.5.0 wheel, worker and palpkg: protocol-v3 negotiation rejects an
 old worker before command submission. A 64-bit transport request ID wraps the
 unchanged Dynabridge payload. One caller-owned libuv RPC loop/executor per Hub or
 worker owns accepts, connected I/O and FF request awaits. Python business callbacks
@@ -265,7 +302,7 @@ active sessions and retained outputs; building/installing files does not reload 
 
 `pal_plugin/` owns the Native execution implementation, tools, session lifecycle
 adapter, Bunshin driver, remote Hub, target Slots, setup skill and manifest.
-It ships as `plugin-remote-0.4.2.palpkg` alongside the native wheels and independent
+It ships as `plugin-remote-0.5.0.palpkg` alongside the native wheels and independent
 worker bundles. The worker needs no Pal installation; the client plugin runs in
 Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
 
@@ -276,7 +313,7 @@ pal package build pal_plugin --output dist
 ```
 
 Install the matching native wheel into Pal's interpreter first, then use
-`pal package install dist/plugin-remote-0.4.2.palpkg --runtime-root <runtime-root>`
+`pal package install dist/plugin-remote-0.5.0.palpkg --runtime-root <runtime-root>`
 for offline preparation, or the running host's authorized package installation
 flow. Verification checks the native Runtime, RPC client and resident Pal contract;
 it does not install dependencies or restart services. The plugin uses the existing

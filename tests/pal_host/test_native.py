@@ -54,6 +54,31 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(result["status"], TERMINAL, result)
         return result
 
+    async def test_stdin_adapter_and_old_extension_compatibility(self):
+        from unittest.mock import patch
+        text = '中文\n\x00$HOME $(false)'
+        result = await self.runtime.run('cat', stdin=text)
+        self.assertEqual(result['stdout_bytes'], text.encode())
+        with self.assertRaisesRegex(ShellRejected, 'stdin_pty_conflict'):
+            await self.runtime.run('cat', stdin='', tty=True)
+        with patch.object(native, 'STDIN_VERSION', 0):
+            self.assertEqual((await self.runtime.run('printf legacy'))['stdout'], 'legacy')
+            with self.assertRaisesRegex(ShellRejected, 'stdin_unsupported'):
+                await self.runtime.run('cat', stdin='')
+
+    async def test_cancelled_stdin_run_reaps_and_retires_session(self):
+        marker = self.root / 'started'
+        task = asyncio.create_task(self.runtime.run(python(
+            f'import pathlib,time;pathlib.Path({str(marker)!r}).touch();time.sleep(30)'),
+            stdin='x' * 300000, turn_id='stdin-turn'))
+        await until(marker.exists)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(self.runtime._pending)
+        self.assertFalse(self.runtime._owners)
+        self.assertEqual((await self.runtime.run('cat', stdin='next'))['stdout'], 'next')
+
     async def test_oneshot_failure_cwd_and_spawn_error(self):
         result = await self.runtime.run("printf hello; printf bad >&2; exit 7", cwd=str(self.root))
         self.assertEqual((result["session_id"], result["returncode"], result["stdout"], result["stderr"]),

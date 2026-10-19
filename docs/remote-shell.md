@@ -1,7 +1,15 @@
 # Native remote shell
 
-This change adds execution targets to the native backend. Python shell behavior is
-unchanged. Target `0` is always local; missing remote infrastructure never selects
+Both built-in and native shells accept `target` (default `0`) and optional literal
+UTF-8 `stdin`. The built-in shell rejects nonzero targets. Native execution sends
+stdin to the selected worker, where a finite temporary file supplies input and EOF.
+Explicit input requires `tty=false`, and privilege approvals bind its exact contents.
+Native 0.5.0 exposes `STDIN_VERSION=1`; protocol-v3 worker metadata reports
+`stdin_version`, including `privilege.stdin_version` when the protected helper
+supports it. Unsupported input is rejected before execution; omitted input keeps
+the old wire shape. Existing frame and signed-envelope limits remain in force.
+
+Target `0` is always local; missing remote infrastructure never selects
 another target or replays a command. This document describes source changes, not
 an activated Pal installation.
 
@@ -149,14 +157,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.4.2.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.5.0.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
 pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.4.2.palpkg --runtime-root <runtime-root>
+pal package install ../pal-shell-native/dist/plugin-remote-0.5.0.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform

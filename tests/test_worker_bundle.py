@@ -45,6 +45,16 @@ async def main(binary, original=None):
                 clients.append(client)
                 return await client.connect()
             client = await connect()
+            info = await client.request('metadata', {})
+            assert info['stdin_version'] == 1, info
+            input_id = uuid4().hex
+            text = '中文\x00\r\n$HOME $(false) EOF'
+            await client.request('submit', {'operation_id': input_id, 'cmd': 'cat', 'stdin': text, 'wait_ms': 5000})
+            incoming = (await client.request('query', {'operation_id': input_id, 'wait_ms': 5000}))['result']
+            assert incoming['returncode'] == 0, incoming
+            data = await client.request('output', {'snapshot': incoming['snapshot'], 'stream': 'stdout'})
+            assert data['data'] == text.encode(), data
+            await client.request('release', {'output_id': incoming['output_id']})
             oid = uuid4().hex
             gate = root/'finish'
             args = {'operation_id': oid,

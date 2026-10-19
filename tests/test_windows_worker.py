@@ -28,6 +28,17 @@ class WindowsWorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.close()
         self.directory.cleanup()
 
+    async def test_finite_utf8_stdin_is_exact(self):
+        text = '中文\x00\r\n\"\' $HOME $(false) EOF  '
+        command = '$i = [Console]::OpenStandardInput(); $o = [Console]::OpenStandardOutput(); $i.CopyTo($o)'
+        oid = uuid4().hex
+        await self.worker.handle('submit', {'operation_id': oid, 'cmd': command, 'stdin': text, 'wait_ms': 5000})
+        response = await self.worker.handle('query', {'operation_id': oid, 'wait_ms': 5000})
+        result = response['result']
+        self.assertEqual(result['returncode'], 0, response)
+        chunk = await self.worker.handle('output', {'snapshot': result['snapshot'], 'stream': 'stdout'})
+        self.assertEqual(chunk['data'], text.encode())
+
     async def test_authenticated_multiplexed_tcp_transport(self):
         import socket
         import _pal_shell_rpc as wire

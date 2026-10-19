@@ -117,6 +117,7 @@ class Worker:
         self.snapshot_key = secrets.token_bytes(32)
         self.info = None
         self.management_probe = None
+        self.privilege_stdin_probe = None
         from .transport import Executor
         self.rpc_executor = Executor()
         self.server = None
@@ -337,6 +338,10 @@ class Worker:
         return op, True
 
     def _finish(self, op, result=None, error=None):
+        # Native execution owns its input by the first result, even if the child
+        # is still running. Replays compare the retained fingerprint, not args;
+        # keep approval metadata but never retain the input body in the journal.
+        op.args.pop('stdin', None)
         if error or (result or {}).get('status') in TERMINAL | {'accepted'}:
             op.auth_available = False
         op.state = 'failed' if error else 'complete'
@@ -348,8 +353,11 @@ class Worker:
         try:
             args = op.args
             if op.method == 'submit':
-                result = await self._native('run_limited', self.config.shell, args['cmd'], os.path.expanduser(args.get('cwd', '')),
-                    args.get('tty', False), args['wait_ms'], args.get('timeout_ms') or 0, 0, self.config.output_limit)
+                stdin = args.get('stdin')
+                result = await self._native('run_limited_with_stdin' if stdin is not None else 'run_limited',
+                    self.config.shell, args['cmd'], os.path.expanduser(args.get('cwd', '')),
+                    args.get('tty', False), args['wait_ms'], args.get('timeout_ms') or 0, 0, self.config.output_limit,
+                    *((stdin,) if stdin is not None else ()))
                 if result.get('output_id'):
                     self.native_owners[result['output_id']] = op.operation_id
                 snapshot = self._snapshot(result)
@@ -376,20 +384,23 @@ class Worker:
 
     async def handle(self, method, args):
         if method == 'metadata':
-            from .privilege import trusted_executable
+            from .privilege import trusted_executable, privileged_stdin_version
             if args.get('refresh'):
+                self.privilege_stdin_probe = None
                 self.info = await asyncio.to_thread(probe, await asyncio.to_thread(shell_info, self.config.shell))
                 if sys.platform.startswith('linux'):
                     from .privilege import management_status
                     self.management_probe = await management_status(self)
             active = sum(item['event']['status'] not in TERMINAL for item in self.outputs.values())
             return {**self.info, 'worker_id': self.config.worker_id, 'runtime_epoch': self.epoch,
+                    'stdin_version': getattr(native, 'STDIN_VERSION', 0),
                     'privilege_gate_version': native.PRIVILEGE_GATE_VERSION,
                     'observation_methods': ['observe'],
                     'protocol_version': PROTOCOL_VERSION, 'active_tasks': active, 'draining': self.draining,
                     'retained_outputs': len(self.outputs), 'reserved_bytes': len(self.reservations) * self.config.output_limit,
                     'limits': {'output_bytes': self.config.output_limit, 'retained_bytes': self.config.retained_limit,
                                'chunk_bytes': CHUNK_BYTES}, 'privilege': {'mode': 'signed_sudoers' if sys.platform.startswith('linux') else ('keychain' if sys.platform == 'darwin' else 'unsupported'),
+                               'stdin_version': await privileged_stdin_version(self),
                                'allowed_actions': list(self.config.management_actions),
                                'installation': self.management_probe or {'ok':False,'reason':'not_probed'},
                                'configured': bool(self.config.management_helper or self.config.privilege_helper),
@@ -423,12 +434,24 @@ class Worker:
         if method in {'submit', 'session'}:
             params = {k: v for k, v in args.items() if k != 'operation_id'}
             if method == 'submit':
-                if set(params) - {'cmd', 'cwd', 'tty', 'wait_ms', 'timeout_ms'}:
+                if set(params) - {'cmd', 'cwd', 'tty', 'wait_ms', 'timeout_ms', 'stdin'}:
                     raise RemoteError('invalid_request', 'Unsupported execution arguments')
                 text(params.get('cmd'), 'cmd')
                 text(params.get('cwd', ''), 'cwd', empty=True)
                 if type(params.get('tty', False)) is not bool:
                     raise RemoteError('invalid_request', 'tty must be boolean')
+                from .input import stdin_bytes
+                try:
+                    stdin_bytes(params.get('stdin'))
+                except ValueError as exc:
+                    raise RemoteError('invalid_stdin', str(exc)) from exc
+                if params.get('stdin') is None:
+                    params.pop('stdin', None)
+                else:
+                    if params.get('tty'):
+                        raise RemoteError('stdin_pty_conflict', 'stdin requires tty=false')
+                    if getattr(native, 'STDIN_VERSION', 0) != 1:
+                        raise RemoteError('stdin_unsupported', 'Update the worker native extension to support stdin')
                 if os.name == 'nt' and params.get('tty'):
                     raise RemoteError('pty_unsupported', 'Windows prototype does not provide interactive ConPTY')
                 params['wait_ms'] = integer(params.get('wait_ms', 1000 if params.get('tty') else 300000), 'wait_ms', 0, 300000)

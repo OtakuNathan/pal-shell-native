@@ -204,6 +204,15 @@ class ShellRouter(ShellRuntime):
         return self._adopt(ticket, response['result'])
 
     async def run(self, cmd, *, target=0, sudo=False, delivery_context=None, **kwargs):
+        if type(target) is not int or target < 0:
+            raise ShellRejected('invalid_target: target must be a non-negative integer')
+        from .inputs import validate_stdin
+        try:
+            validate_stdin(kwargs.get('stdin'))
+        except ValueError as exc:
+            raise ShellRejected(f'invalid_stdin: {exc}') from exc
+        if kwargs.get('stdin') is not None and kwargs.get('tty'):
+            raise ShellRejected('stdin_pty_conflict: stdin requires tty=false')
         if target == 0:
             if sudo:
                 return await self.local_privileged(cmd, **kwargs)
@@ -224,7 +233,10 @@ class ShellRouter(ShellRuntime):
             metadata = await self._rpc(ticket, 'metadata', {})
             ticket.epoch = metadata['runtime_epoch']
             self._require_privilege_gate(metadata)
+            self._require_stdin(metadata, kwargs.get('stdin'))
             args = {k: kwargs[k] for k in ('cwd', 'tty', 'timeout_ms') if kwargs.get(k) is not None}
+            if kwargs.get('stdin') is not None:
+                args['stdin'] = kwargs['stdin']
             args['wait_ms'] = kwargs.get('wait_ms')
             if args['wait_ms'] is None:
                 args['wait_ms'] = 1000 if args.get('tty') else 300000
@@ -266,15 +278,29 @@ class ShellRouter(ShellRuntime):
             raise RemoteFailure('native_incompatible',
                 'Update this Linux worker to the matching build with the privilege gate before submitting commands')
 
+    @staticmethod
+    def _require_stdin(metadata, stdin, *, privileged=False):
+        if stdin is None:
+            return
+        supported = metadata.get('stdin_version') == 1
+        if privileged:
+            supported = supported and metadata.get('privilege', {}).get('stdin_version') == 1
+        if not supported:
+            raise RemoteFailure('stdin_unsupported',
+                'Update this worker and, for sudo, its protected helper to support stdin')
+
     async def local_privileged(self, cmd, **kwargs):
         if not sys.platform.startswith('linux'):
             raise ShellRejected('sudo_unsupported: local privilege approval currently requires Linux')
         if kwargs.get('tty'):
             raise ShellRejected('privilege_pty_unsupported: an approved command cannot open a privileged PTY')
+        self._check_stdin(kwargs.get('stdin'))
         if self._closed or self._closing is not None or self.owner.closed:
             raise ShellRejected('shell runtime is closed')
         cwd = os.path.abspath(os.path.expanduser(kwargs.get('cwd') or os.getcwd()))
         args = {'action': 'sudo', 'cmd': cmd, 'cwd': cwd}
+        if kwargs.get('stdin') is not None:
+            args['stdin'] = kwargs['stdin']
         approval = {'operation_id': uuid4().hex, 'worker_id': 'local host',
                     'runtime_epoch': self.epoch, 'expires_at': time.time() + 600}
         task = asyncio.current_task()
@@ -311,13 +337,16 @@ class ShellRouter(ShellRuntime):
         self.remote_foreground.add(task)
         submitted = False
         try:
-            metadata = await self._rpc(ticket, 'metadata', {})
+            metadata = await self._rpc(ticket, 'metadata', {'refresh': True} if kwargs.get('stdin') is not None else {})
             ticket.epoch = metadata['runtime_epoch']
             self._require_privilege_gate(metadata)
+            self._require_stdin(metadata, kwargs.get('stdin'), privileged=True)
             args = {'action': action, 'target': target}
             if action == 'sudo':
                 args.update(cmd=cmd, cwd=kwargs.get('cwd', ''), wait_ms=kwargs.get('wait_ms') if kwargs.get('wait_ms') is not None else 300000,
                             timeout_ms=kwargs.get('timeout_ms'))
+                if kwargs.get('stdin') is not None:
+                    args['stdin'] = kwargs['stdin']
             else:
                 identity = await port.call('identity', {})
                 args['protected_machine_id'] = identity['machine_identity']

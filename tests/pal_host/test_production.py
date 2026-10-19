@@ -551,6 +551,8 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.core.state.pending_channel_turns), 1)
             resume.set()
             await asyncio.wait_for(pump, 5)
+            # The completion task releases its lease; the core pump admits queued work.
+            await self.core.main_loop.run_once_async(self.core.context, self.core.state)
             # Drain a genuinely scheduled user turn, not another notification pump.
             await asyncio.gather(*list(self.core.state.turn_tasks.values()))
             self.assertFalse(self.core.state.pending_channel_turns)

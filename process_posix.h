@@ -15,7 +15,7 @@ struct Child {
 // The caller keeps the leader unreaped until all signalling is finished.
 Child spawn_child(const std::string& shell, const std::string& command,
                   const std::string& cwd, bool tty, int stdout_fd, int stderr_fd,
-                  bool capture = false, bool allow_privilege = false);
+                  bool capture = false, bool allow_privilege = false, int stdin_fd = -1);
 #ifdef _WIN32
 int read_child_pipe(int fd, char* bytes, std::size_t size);
 #endif
