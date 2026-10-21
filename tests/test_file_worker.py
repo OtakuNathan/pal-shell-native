@@ -103,7 +103,7 @@ class FileWorkerTests(unittest.IsolatedAsyncioTestCase):
         content = '字' * 300000
         oid, written = await self.execute('write', {'file_path': str(path), 'content': content})
         self.assertEqual(written['status'], 'ok', written)
-        self.assertEqual(path.read_text(), content)
+        self.assertEqual(path.read_bytes(), content.encode('utf-8'))
         self.assertEqual(await self.query(oid), written)
         ref = await self.upload({'scope': 'test', 'revision': self.revision, 'action': 'write',
             'args': {'file_path': str(path), 'content': 'different'}})

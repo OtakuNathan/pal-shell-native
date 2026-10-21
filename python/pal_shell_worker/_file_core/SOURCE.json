@@ -1,10 +1,10 @@
 {
-  "pal_revision": "92901ef096865a4c75f6ec58d57b6cc44526c31f",
+  "pal_revision": "82608c7257c2f701b7edcf41a38c690361f78f6e",
   "source_sha256": {
     "src/pal/execution/file_core_contracts.py": "f84681b247b0fc37a4d31cddab83d016f29e399a4eb5ec8da16bdcd08ab6bc60",
     "src/pal/execution/file_edit.py": "af1005af22bf4d1cb0b38926656862e2d9968aa251ff5bd0ab59620db48c3321",
     "src/pal/execution/file_read.py": "08846a905f97f67c0f4ff3e6d1f1e0de937b007b67cc120b34695c54532ce6d1",
-    "src/pal/execution/file_registry.py": "63515de91a90202ec622ba1a8c87d305563b16c34b623566a69fa876117adb16",
+    "src/pal/execution/file_registry.py": "954a47396cbbc3d411df7541e213a9f25af60a0f582d23a4601dab5aefbdaad5",
     "src/pal/execution/file_state.py": "fda20555fb937982c454f692bd9cee37a708bf4d517bd0aa16d6a49a284e7acf",
     "src/pal/execution/file_tool_contracts.py": "c5cf3ae546c69aac41d88bd9339e97c6b99a1e820d9df688a557eba6917d2d18",
     "src/pal/execution/file_write.py": "ab241df33450654d5aac4902776f0555b0ca013f594e5ac02239b119639b49c6",

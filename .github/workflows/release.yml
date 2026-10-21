@@ -9,7 +9,7 @@ on:
       pal_ref:
         description: 'Published Pal revision matching the exported file engine (source hashes are checked)'
         required: false
-        default: '92901ef096865a4c75f6ec58d57b6cc44526c31f'
+        default: '82608c7257c2f701b7edcf41a38c690361f78f6e'
 permissions:
   contents: read
 jobs:
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ${{ inputs.pal_ref || '92901ef096865a4c75f6ec58d57b6cc44526c31f' }}
+          ref: ${{ inputs.pal_ref || '82608c7257c2f701b7edcf41a38c690361f78f6e' }}
           path: .pal
       - run: python -m pip install . './.pal[test]'
         env:
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ${{ inputs.pal_ref || '92901ef096865a4c75f6ec58d57b6cc44526c31f' }}
+          ref: ${{ inputs.pal_ref || '82608c7257c2f701b7edcf41a38c690361f78f6e' }}
           path: .pal
       - run: python -m pip install ./.pal
       - run: pal package build pal_plugin --output dist
