@@ -4,7 +4,9 @@ This package depends only on the Python standard library.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import hashlib
+import json
 from pathlib import Path
 import re
 from typing import Protocol
@@ -56,6 +58,25 @@ class RemoteFailure(RuntimeError):
         self.code, self.effect, self.operation_id = code, effect, operation_id
 
 
+def resolve_target(targets, value):
+    """Exact registry lookup. Never coerce a numeric string or guess an alias."""
+    if type(value) is int:
+        matches = [target for target in targets if target.target == value]
+    elif isinstance(value, str) and value:
+        matches = [target for target in targets if value in (target.name, target.shortcut)]
+    else:
+        matches = []
+    matches = {target.target: target for target in matches}
+    if len(matches) != 1:
+        raise RemoteFailure('ambiguous_target' if matches else 'invalid_target',
+                            'Target alias is ambiguous' if matches else 'Target is not configured')
+    target = next(iter(matches.values()))
+    binding = hashlib.sha256(json.dumps(asdict(target), sort_keys=True).encode()).hexdigest()
+    return {'target': target.target, 'target_name': target.name,
+            'worker_id': target.worker_id, 'binding': binding}
+
+
 class RemotePort(Protocol):
-    async def request(self, target: int, method: str, params: dict, epoch: str | None = None) -> dict: ...
+    async def resolve(self, target: int | str) -> dict: ...
+    async def request(self, target: int, method: str, params: dict, epoch: str | None = None, *, binding: str = '') -> dict: ...
     async def list(self, refresh: bool = False, *, target: int | None = None) -> list[dict]: ...

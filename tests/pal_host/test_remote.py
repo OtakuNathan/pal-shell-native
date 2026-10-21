@@ -25,13 +25,17 @@ from pal.shared.tool_protocol import new_tool_call
 
 
 class DirectPort:
+    closed = False
     def __init__(self, hub):
         self.hub = hub
         self.drop_submit = False
         self.drop_release = False
 
-    async def request(self, target, method, params, epoch=None):
-        result = await self.call('request', {'target': target, 'method': method, 'params': params, 'runtime_epoch': epoch})
+    async def resolve(self, target):
+        return await self.call('resolve', {'target': target})
+
+    async def request(self, target, method, params, epoch=None, *, binding=''):
+        result = await self.call('request', {'target': target, 'method': method, 'params': params, 'runtime_epoch': epoch, 'binding': binding})
         if method == 'submit' and self.drop_submit:
             self.drop_submit = False
             raise RemoteFailure('transport_lost', 'Injected lost confirmation', effect='unknown')
@@ -86,6 +90,26 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             result = await self.tool('run_shell', target=target, cmd='cat', stdin=text)
             self.assertTrue(result.ok, result.text)
             self.assertEqual(result.structured['stdout'], text)
+
+    async def test_published_file_tools_share_shell_target_resolution_and_delivery(self):
+        path = self.path / 'file.txt'
+        path.write_text('first\nsecond\n')
+        read_call = new_tool_call(name='read_file', args={'target': 'test', 'file_path': str(path), 'limit': 1})
+        read = await self.runtime.execute_tool_async(read_call, turn_id='origin')
+        self.assertTrue(read.ok, read.text)
+        self.assertEqual(read.structured['target'], 1)
+        self.runtime.commit_tool_delivery(turn_id='origin', context_delivery=read.context_delivery, result_id=read_call.call_id)
+        await self.runtime.acknowledge_tool_result_async(read_call.call_id, 'origin')
+        edited = await self.tool('edit_file', target='test', file_path=str(path),
+            edits=[{'old_string': 'first', 'new_string': 'changed'}])
+        self.assertTrue(edited.ok, edited.text)
+        self.assertEqual(path.read_text(), 'changed\nsecond\n')
+        hidden = await self.tool('edit_file', target=1, file_path=str(path),
+            edits=[{'old_string': 'second', 'new_string': 'hidden'}])
+        self.assertFalse(hidden.ok)
+        shell = await self.tool('run_shell', target='test', cmd='true')
+        self.assertTrue(shell.ok, shell.text)
+        self.assertIn('test (1)', shell.text)
 
     async def test_old_worker_rejects_stdin_before_submission_but_keeps_legacy_calls(self):
         from unittest.mock import patch
@@ -224,11 +248,11 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
                 offline = False
                 submissions = []
 
-                async def lose(target, method, params, epoch=None):
+                async def lose(target, method, params, epoch=None, *, binding=''):
                     nonlocal offline
                     if offline and method in {'query', 'events'}:
                         raise RemoteFailure('transport_lost', 'Offline during recovery', effect='unknown')
-                    result = await original(target, method, params, epoch)
+                    result = await original(target, method, params, epoch, binding=binding)
                     if method == 'submit':
                         submissions.append(params['operation_id'])
                         offline = True
@@ -295,11 +319,11 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         offline = False
         controls = []
 
-        async def lose(target, method, params, epoch=None):
+        async def lose(target, method, params, epoch=None, *, binding=''):
             nonlocal offline
             if offline:
                 raise RemoteFailure('transport_lost', 'Offline after termination', effect='unknown')
-            response = await original(target, method, params, epoch)
+            response = await original(target, method, params, epoch, binding=binding)
             if method == 'session' and params['action'] == 'terminate' and not controls:
                 controls.append(params['operation_id'])
                 offline = True
@@ -364,10 +388,10 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_malformed_metadata_never_creates_unknown_execution(self):
         original = self.port.request
-        async def malformed(target, method, params, epoch=None):
+        async def malformed(target, method, params, epoch=None, *, binding=''):
             if method == 'metadata':
                 return {}
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = malformed
         result = await self.tool('run_shell', target=1, cmd='printf must-not-run')
         self.assertFalse(result.ok)
@@ -420,11 +444,11 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             raw2 = await shell.run('printf second', target=2, load_output=False)
             entered = asyncio.Event()
             original = self.port.request
-            async def slow(target, method, params, epoch=None):
+            async def slow(target, method, params, epoch=None, *, binding=''):
                 if target == 1 and method == 'output':
                     entered.set()
                     await release.wait()
-                return await original(target, method, params, epoch)
+                return await original(target, method, params, epoch, binding=binding)
             self.port.request = slow
             pending = asyncio.create_task(shell.materialize(raw1))
             await asyncio.wait_for(entered.wait(), 3)
@@ -521,14 +545,14 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         original = self.port.request
         offsets = []
         fail = True
-        async def interrupted(target, method, params, epoch=None):
+        async def interrupted(target, method, params, epoch=None, *, binding=''):
             nonlocal fail
             if method == 'output' and params['stream'] == 'stdout':
                 offsets.append(params['offset'])
                 if params['offset'] > 0 and fail:
                     fail = False
                     raise RemoteFailure('transport_lost', 'injected download interruption')
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = interrupted
         with self.assertRaises(RemoteFailure):
             await shell.materialize(raw)
@@ -549,9 +573,9 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         sid = response.structured['session_id']
         original = self.port.request
         methods = []
-        async def old_metadata(target, method, params, epoch=None):
+        async def old_metadata(target, method, params, epoch=None, *, binding=''):
             methods.append(method)
-            result = await original(target, method, params, epoch)
+            result = await original(target, method, params, epoch, binding=binding)
             if method == 'metadata':
                 result.pop('observation_methods', None)
             return result
@@ -567,12 +591,12 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_privileged_precommit_failure_does_not_leave_write_busy(self):
         original = self.port.request
         for stage in ('metadata', 'prepare_privileged', 'malformed_metadata'):
-            async def fail(target, method, params, epoch=None):
+            async def fail(target, method, params, epoch=None, *, binding=''):
                 if stage == 'malformed_metadata' and method == 'metadata':
                     return {}
                 if method == stage:
                     raise RemoteFailure('transport_lost', 'lost before commit', effect='unknown')
-                return await original(target, method, params, epoch)
+                return await original(target, method, params, epoch, binding=binding)
             self.port.request = fail
             response = await self.tool('run_shell', target=1, sudo=True, cmd='apt update')
             self.assertFalse(response.ok)
@@ -584,10 +608,10 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_privileged_commit_loss_is_retained(self):
         from unittest.mock import AsyncMock
         original = self.port.request
-        async def prepared(target, method, params, epoch=None):
+        async def prepared(target, method, params, epoch=None, *, binding=''):
             if method == 'prepare_privileged':
                 return {'approval': {'operation_id': params['operation_id']}}
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = prepared
         self.owner.approvals.request = AsyncMock()
         original_call = self.port.call
@@ -604,10 +628,10 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_approval_failure_returns_to_model_without_commit_or_write_busy(self):
         from unittest.mock import AsyncMock
         original = self.port.request
-        async def prepared(target, method, params, epoch=None):
+        async def prepared(target, method, params, epoch=None, *, binding=''):
             if method == 'prepare_privileged':
                 return {'approval': {'operation_id': params['operation_id']}}
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = prepared
         self.port.call = AsyncMock(wraps=self.port.call)
         for code, message in [('approval_rejected', 'Approval rejected by user'),
@@ -765,8 +789,8 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_recovers_unadopted_execution_without_confirming_unknown_control(self):
         shell = self.owner.shell
         original = self.port.request
-        async def lose(target, method, params, epoch=None):
-            result = await original(target, method, params, epoch)
+        async def lose(target, method, params, epoch=None, *, binding=''):
+            result = await original(target, method, params, epoch, binding=binding)
             if method == 'submit':
                 raise RemoteFailure('transport_lost', 'Lost submit response', effect='unknown')
             return result
@@ -828,8 +852,8 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(.001)
         original = self.port.request
         entered, proceed = asyncio.Event(), asyncio.Event()
-        async def hold_query(target, method, params, epoch=None):
-            result = await original(target, method, params, epoch)
+        async def hold_query(target, method, params, epoch=None, *, binding=''):
+            result = await original(target, method, params, epoch, binding=binding)
             if method == 'query':
                 entered.set()
                 await proceed.wait()
@@ -861,8 +885,8 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         sid = raw['session_id']
         original = self.port.request
         entered, proceed = asyncio.Event(), asyncio.Event()
-        async def hold_query(target, method, params, epoch=None):
-            result = await original(target, method, params, epoch)
+        async def hold_query(target, method, params, epoch=None, *, binding=''):
+            result = await original(target, method, params, epoch, binding=binding)
             if method == 'query' and epoch == raw['runtime_epoch']:
                 entered.set()
                 await proceed.wait()
@@ -895,12 +919,12 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_query_keeps_original_submission_for_reconciliation(self):
         original = self.port.request
         failed = False
-        async def fail_query(target, method, params, epoch=None):
+        async def fail_query(target, method, params, epoch=None, *, binding=''):
             nonlocal failed
             if method == 'query' and not failed:
                 failed = True
                 raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = fail_query
         count = self.path / 'query-count'
         with self.assertRaises(RemoteFailure) as caught:
@@ -917,10 +941,10 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_output_read_failure_keeps_confirmed_execution_and_retained_output(self):
         original = self.port.request
-        async def fail_output(target, method, params, epoch=None):
+        async def fail_output(target, method, params, epoch=None, *, binding=''):
             if method == 'output':
                 raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = fail_output
         count = self.path / 'output-count'
         with self.assertRaises(RemoteFailure) as caught:
@@ -938,12 +962,12 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_recovers_failed_query_without_replaying_command(self):
         original = self.port.request
         failed = False
-        async def fail_query(target, method, params, epoch=None):
+        async def fail_query(target, method, params, epoch=None, *, binding=''):
             nonlocal failed
             if method == 'query' and not failed:
                 failed = True
                 raise RemoteFailure('connection_unavailable', 'Read was not sent', effect='not_started')
-            return await original(target, method, params, epoch)
+            return await original(target, method, params, epoch, binding=binding)
         self.port.request = fail_query
         count = self.path / 'tool-query-count'
         result = await self.tool('run_shell', target=1, cmd=f'echo once >> {count}; printf recovered')
@@ -1000,7 +1024,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_targeted_list_refreshes_only_selected_target_and_summary_is_compact(self):
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
-        self.hub.slots[2] = SimpleNamespace(describe=AsyncMock(side_effect=AssertionError("unselected target probed")))
+        self.hub.slots[2] = SimpleNamespace(config=__import__("dataclasses").replace(self.target, target=2), describe=AsyncMock(side_effect=AssertionError("unselected target probed")))
         try:
             summary = await self.tool('call_tool', name='list_remote', args={'target': 1, 'refresh': True})
             self.assertTrue(summary.ok, summary.text)

@@ -43,6 +43,8 @@ class NativeShellOwner:
         self.on_ready = None
         self.active_calls = 0
         self.remote_port = None
+        from .files import RemoteFiles
+        self.files = RemoteFiles(self)
         self.retiring_transient_turns = set()
         self.transient_retirement_tasks = {}
         self._transient_retirement_again = set()
@@ -66,7 +68,7 @@ class NativeShellOwner:
     def has_work(self):
         observed_work = any(s.get("watching", True) or s.get("latest_status") not in TERMINAL
                             for s in self.sessions.values())
-        return bool(observed_work or self.pending or (self._shell is not None
+        return bool(observed_work or self.pending or self.files.has_work or (self._shell is not None
                     and (self._shell._foreground or self._shell.execution_work)))
 
     @asynccontextmanager
@@ -91,6 +93,7 @@ class NativeShellOwner:
         if self.remote_port is not None:
             raise RuntimeError("Remote backend already attached")
         self.remote_port = port
+        self.files.reconnect()
         self.observations.retry_acknowledgements()
         if self._shell is not None:
             self._shell.loop.call_soon_threadsafe(self._shell.resume)
@@ -290,6 +293,9 @@ class NativeShellOwner:
 
     def close_idle(self):
         self.check_idle()
+        self.files.detach_histories()
+        if not self.files.handed_off:
+            self.files.retire_scope()
         if self._shell:
             self._shell.close_idle()
             self._shell = None
@@ -305,6 +311,7 @@ class NativeShellOwner:
             self.events.in_flight.clear()
 
     async def close(self):
+        await self.files.close()
         self.closed = True
         tasks = tuple(self.transient_retirement_tasks.values())
         for task in tasks:
@@ -395,6 +402,14 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if owner is None:
             self.shell_owner.runtime = self
         self._owns_shell = owner is None
+        from uuid import uuid4
+        self._file_namespace = uuid4().hex
+
+    def fork_transient(self):
+        child = super().fork_transient()
+        from uuid import uuid4
+        child._file_namespace = uuid4().hex
+        return child
 
     def build_introspection_provider(self):
         from .capabilities import build_provider
@@ -443,7 +458,38 @@ class NativeExecutionRuntime(ExecutionRuntime):
         return BunshinShellSessions(self)
 
     def prepare_model_context(self, memory, continuation, *, context_view=None):
+        super().prepare_model_context(memory, continuation, context_view=context_view)
+        self.shell_owner.files.project(self, continuation.turn_id)
         self.shell_owner.observations.project(self, memory, continuation, context_view=context_view)
+
+    async def execute_remote_file_async(self, action, call):
+        return await self.shell_owner.files.execute(self, action, call)
+
+    def bind_result_history(self, memory_service):
+        super().bind_result_history(memory_service)
+        if memory_service is not None:
+            self.shell_owner.files.bind_history(memory_service.history)
+
+    def unbind_result_history(self, memory_service):
+        if memory_service is not None:
+            self.shell_owner.files.unbind_history(memory_service.history)
+        super().unbind_result_history(memory_service)
+
+    def commit_tool_delivery(self, *, turn_id, context_delivery, result_id=''):
+        if context_delivery and context_delivery.get('remote'):
+            self.shell_owner.files.commit(context_delivery, result_id)
+            return self.logical_context_for_turn(turn_id)
+        return super().commit_tool_delivery(turn_id=turn_id, context_delivery=context_delivery, result_id=result_id)
+
+    def discard_uncommitted_tool_delivery(self, *, turn_id, result_ref):
+        self.shell_owner.files.discard(result_ref)
+        return super().discard_uncommitted_tool_delivery(turn_id=turn_id, result_ref=result_ref)
+
+    def retire_tool_results(self, *, turn_id, result_ids, execution_lifetime_id=''):
+        lifetime = execution_lifetime_id or self.logical_context_for_turn(turn_id).execution_lifetime_id
+        remote_lifetime = (self.shell_owner.files.lifetime_for(self, turn_id) if turn_id else lifetime)
+        self.shell_owner.files.retire(remote_lifetime, result_ids)
+        return super().retire_tool_results(turn_id=turn_id, result_ids=result_ids, execution_lifetime_id=lifetime)
 
     def observe_tool_delivery(self, call, result):
         # Public results deliberately lack the host event identity. The pending
@@ -619,6 +665,11 @@ class NativeExecutionRuntime(ExecutionRuntime):
 
     async def _invoke_tool_record_async(self, generation, call, **kwargs):
         result = await super()._invoke_tool_record_async(generation, call, **kwargs)
+        if call.call_id in self.shell_owner.files.calls and not kwargs.get('turn_id'):
+            delivery = getattr(result, 'context_delivery', None)
+            if delivery and delivery.get('remote'):
+                self.shell_owner.files.commit(delivery, call.call_id)
+            await self.shell_owner.files.acknowledge(call.call_id)
         record = generation.record_for_alias(call.name)
         if record is None or not native_action(record):
             return result  # call_tool's resolved inner invocation owns the handoff.
@@ -671,6 +722,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
         return result
 
     async def acknowledge_tool_result_async(self, call_id, turn_id):
+        await self.shell_owner.files.acknowledge(call_id)
         pending = self.shell_owner.pending.get(call_id)
         if pending is not None and pending.turn_id == turn_id:
             await self.shell_owner.commit(call_id)
@@ -680,6 +732,8 @@ class NativeExecutionRuntime(ExecutionRuntime):
         await super().interrupt_turn(turn_id)
 
     async def finish_transient_turn(self, turn_id):
+        self._file_scope_closed = True
+        self.shell_owner.files.retire_scope(self.shell_owner.files.lifetime_for(self, turn_id))
         owner = self.shell_owner
         if owner.closed:
             await super().finish_transient_turn(turn_id)

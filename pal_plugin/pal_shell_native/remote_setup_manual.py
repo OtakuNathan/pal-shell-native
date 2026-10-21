@@ -40,7 +40,7 @@ package, execution:extensions port, and remote plugin discovery.
 The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
 it is not built into Pal. Install the matching native wheel in the host interpreter,
 then use `install_package` (or pal package install for offline preparation) with
-plugin-remote-0.5.0.palpkg. If the runtime still contains the retired managed
+plugin-remote-0.6.0.palpkg. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
 packages/previous/builtin/remote and restores it on publication failure. Do not
@@ -207,8 +207,9 @@ Refresh list_remote and verify the intended target, OS/architecture, actual shel
 capacity and supported management operations. cwd expands ~ using the executing
 worker account's home (the local process account for target 0); it does not use
 the SSH client's home or expand environment variables. Run a harmless command through
-run_shell(target=...), checking execution identity and remote cwd. Explain that
-local file tools do not edit remote files; record the exact remote checkout and
+run_shell(target=...), checking execution identity and remote cwd. File tools use
+the same target when the worker advertises file_protocol_version=1; their default
+target=0 still accesses the Pal host. Record the exact remote checkout and
 how local uncommitted changes were transferred before claiming remote test results.
 
 For an isolated acceptance task, disconnect the transport and reconnect to the

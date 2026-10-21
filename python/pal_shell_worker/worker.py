@@ -103,6 +103,8 @@ class Worker:
         self.sequence = itertools.count(1)
         self.pending = {}
         self.operations: dict[str, Operation] = {}
+        from .files import WorkerFiles
+        self.files = WorkerFiles(self)
         self.outputs = {}
         self.native_outputs = {}
         self.native_owners = {}
@@ -383,6 +385,8 @@ class Worker:
             self._finish(op, error=RemoteError('execution_unknown', 'Worker could not confirm operation outcome', effect='unknown', operation_id=op.operation_id))
 
     async def handle(self, method, args):
+        if method.startswith('file_'):
+            return await self.files.handle(method, args)
         if method == 'metadata':
             from .privilege import trusted_executable, privileged_stdin_version
             if args.get('refresh'):
@@ -393,6 +397,7 @@ class Worker:
                     self.management_probe = await management_status(self)
             active = sum(item['event']['status'] not in TERMINAL for item in self.outputs.values())
             return {**self.info, 'worker_id': self.config.worker_id, 'runtime_epoch': self.epoch,
+                    'file_protocol_version': 1,
                     'stdin_version': getattr(native, 'STDIN_VERSION', 0),
                     'privilege_gate_version': native.PRIVILEGE_GATE_VERSION,
                     'observation_methods': ['observe'],

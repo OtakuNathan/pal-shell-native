@@ -32,6 +32,8 @@ class Ticket:
     public_id: int = 0
     kind: str = 'execution'
     latest_result: dict | None = None
+    binding: str = ''
+    target_name: str = ''
 
 
 class ShellRouter(ShellRuntime):
@@ -124,7 +126,8 @@ class ShellRouter(ShellRuntime):
         sequence = next(self.rpc_sequence)
         try:
             port = self._port()
-            result = await port.request(ticket.target, method, params, ticket.epoch or None)
+            result = await port.request(ticket.target, method, params, ticket.epoch or None,
+                                        **({'binding': ticket.binding} if ticket.binding else {}))
         except RemoteFailure as exc:
             if (ticket.origin_turn in self.owner.retiring_transient_turns and exc.code in {
                 'transport_lost', 'transport_timeout', 'transport_closed', 'transport_unavailable',
@@ -153,6 +156,8 @@ class ShellRouter(ShellRuntime):
 
     def _adopt(self, ticket, result):
         result = dict(result)
+        if ticket.target_name:
+            result['target_name'] = ticket.target_name
         observed = self.worker_epochs.get(ticket.target)
         same_epoch = ((not ticket.epoch or result['runtime_epoch'] == ticket.epoch)
                       and (observed is None or observed[1] == result['runtime_epoch']))
@@ -204,6 +209,20 @@ class ShellRouter(ShellRuntime):
         return self._adopt(ticket, response['result'])
 
     async def run(self, cmd, *, target=0, sudo=False, delivery_context=None, **kwargs):
+        name = 'local'
+        resolved = None
+        if not (type(target) is int and target == 0):
+            port = self._port()
+            if hasattr(port, 'resolve'):
+                resolved = await port.resolve(target)
+                target, name = resolved['target'], resolved['target_name']
+            elif type(target) is not int:
+                raise RemoteFailure('invalid_target', 'Remote port does not support alias resolution')
+        result = await self._run_resolved(cmd, target=target, sudo=sudo, delivery_context=delivery_context,
+                                          target_route=resolved, **kwargs)
+        return {**result, 'target_name': name if target == 0 or name != 'local' else str(target)}
+
+    async def _run_resolved(self, cmd, *, target=0, sudo=False, delivery_context=None, target_route=None, **kwargs):
         if type(target) is not int or target < 0:
             raise ShellRejected('invalid_target: target must be a non-negative integer')
         from .inputs import validate_stdin
@@ -220,10 +239,12 @@ class ShellRouter(ShellRuntime):
         if sudo:
             if kwargs.get('tty'):
                 raise RemoteFailure('privilege_pty_unsupported', 'A single-command sudo grant cannot open a privileged PTY')
-            return await self.privileged(target, 'sudo', cmd=cmd, delivery_context=delivery_context, **kwargs)
+            return await self.privileged(target, 'sudo', cmd=cmd, delivery_context=delivery_context, target_route=target_route, **kwargs)
         self._port()  # Reject before allocating any request when the plugin is absent.
         await self.sync_target(target)
         ticket = Ticket(target, '', uuid4().hex, kwargs.get('turn_id', ''))
+        if target_route:
+            ticket.binding, ticket.target_name = target_route['binding'], target_route['target_name']
         self.operations[ticket.operation_id] = ticket
         self._capture_context(ticket, cmd, kwargs.get('tty', False), delivery_context)
         submitted = False
@@ -326,10 +347,12 @@ class ShellRouter(ShellRuntime):
             'budget': None, 'cmd': cmd, 'tty': tty, 'target': ticket.target, 'committed': False, **(context or {}),
         }
 
-    async def privileged(self, target, action, *, cmd='', delivery_context=None, **kwargs):
+    async def privileged(self, target, action, *, cmd='', delivery_context=None, target_route=None, **kwargs):
         port = self._port()
         await self.sync_target(target)
         ticket = Ticket(target, '', uuid4().hex, kwargs.get('turn_id', ''), kind=action if action == 'shutdown' else 'execution')
+        if target_route:
+            ticket.binding, ticket.target_name = target_route['binding'], target_route['target_name']
         self.operations[ticket.operation_id] = ticket
         self._capture_context(ticket, cmd, False, delivery_context)
         self.operation_context[ticket.operation_id].update(privileged=True, signed=False)
@@ -497,7 +520,8 @@ class ShellRouter(ShellRuntime):
             return {'session_id': session_id, 'target': ticket.target, 'status': 'released'}
         operation_id = uuid4().hex
         control = Ticket(ticket.target, ticket.epoch, operation_id, ticket.origin_turn,
-                         ticket.native_id, ticket.output_id, ticket.public_id)
+                         ticket.native_id, ticket.output_id, ticket.public_id,
+                         binding=ticket.binding, target_name=ticket.target_name)
         self.operations[operation_id] = control
         self.operation_context[operation_id] = {
             **self.operation_context.get(ticket.operation_id, self.owner.sessions.get(session_id, {})),

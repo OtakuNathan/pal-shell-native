@@ -13,6 +13,14 @@ Target `0` is always local; missing remote infrastructure never selects
 another target or replays a command. This document describes source changes, not
 an activated Pal installation.
 
+Version 0.6.0 also routes `read_file`, `edit_file`, and `write_file` through this
+resolver. IDs remain integers; names and shortcuts match exactly without
+converting numeric strings to IDs. The worker owns file authority and advertises
+`file_protocol_version=1`. Pal sends post-budget delivery ACKs and synchronizes
+context retirement and current request visibility before dependent mutations.
+Only fully delivered source lines authorize edits; a partial read cannot
+authorize a complete overwrite. An unresolved operation is queried, never replayed.
+
 ## Ownership and implementation
 
 | Owner | Implementation | Responsibilities |
@@ -157,14 +165,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.5.0.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.6.0.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
 pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.5.0.palpkg --runtime-root <runtime-root>
+pal package install ../pal-shell-native/dist/plugin-remote-0.6.0.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform
@@ -292,7 +300,9 @@ with UTF-8 console output and `$ErrorActionPreference = 'Stop'`. The invocation 
 `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`; execution policy
 is scoped to that process, not changed system-wide. Use explicit `exit N` where a
 specific script exit code is required. Windows paths and PowerShell syntax belong
-to this target; Bash assumptions and local file tools do not apply.
+to this target. File tools with the same remote target use worker-side Windows
+paths; the default target=0 still accesses the Pal host. Shell commands must use
+PowerShell syntax.
 
 Build on Windows with the matching CMake, C++ toolchain and Python development
 files. `packaging/build_windows_worker.ps1` in pal-shell-native assembles a complete

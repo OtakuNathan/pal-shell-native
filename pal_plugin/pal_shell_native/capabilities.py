@@ -7,6 +7,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from pal.execution.capabilities import ExecutionIntrospectionProvider
 from pal.execution.contracts import CapabilityResult
+from pal.execution.targets import ExecutionTarget, TARGET_DESCRIPTION
 from pal.execution.tool_facade import EmptyToolInput, StrictToolModel, StructuredToolOutput, ToolGuidance, NextToolHint, ToolRejectedError
 from pal.execution.tool_semantics import DIRECT_CONTROL, INDIRECT_CONTROL, INDIRECT_LOCAL_READ
 from pal.shared.result_rendering import render_structured_for_llm
@@ -17,17 +18,17 @@ from .guidance import REMOTE_RUN_GUIDANCE, RESIDENT_SESSION_GUIDANCE
 
 
 class NativeRunInput(RunInput):
-    target: int = Field(default=0, ge=0, strict=True, description="Execution target; 0 is local. Discover configured remote target IDs with list_remote when needed; reuse a known target. Paths belong to this target.")
+    target: ExecutionTarget = Field(default=0, description=TARGET_DESCRIPTION)
     sudo: bool = Field(default=False, description="Request one privileged command with human approval; requires tty=false. Put the command itself in cmd, without a sudo prefix. Local Linux uses noninteractive system sudo; remote Linux requires the action enabled in its signed helper policy.")
 
 
 class RemoteStartInput(StrictToolModel):
-    target: int = Field(gt=0, strict=True)
+    target: ExecutionTarget
     action: str = Field(min_length=1, description="Exact start action advertised for this target by list_remote.")
 
 
 class RemotePowerInput(StrictToolModel):
-    target: int = Field(gt=0, strict=True)
+    target: ExecutionTarget
     action: Literal["shutdown"] = "shutdown"
 
 
@@ -37,7 +38,7 @@ class TargetRunInput(RunInput):
 
 class ListRemoteInput(StrictToolModel):
     refresh: bool = Field(default=False, description="Refresh selected targets without waking them.")
-    target: int | None = Field(default=None, ge=0, strict=True, description="Exact target ID; omit to list all. 0 is local. A selected refresh probes only this target.")
+    target: ExecutionTarget | None = Field(default=None, description="Exact target ID, name or shortcut; omit to list all. 0 is local.")
     view: Literal["summary", "detail"] = Field(default="summary", description="Summary for target selection and readiness; detail for resources, limits and protocol diagnostics.")
 
 
@@ -561,7 +562,9 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
 
     async def remote_power_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
-        payload = dict(await owner.shell.privileged(call.args['target'], 'shutdown', turn_id=str(call.meta.get('turn_id') or '')))
+        resolved = await owner.shell._port().resolve(call.args['target'])
+        payload = dict(await owner.shell.privileged(resolved['target'], 'shutdown', target_route=resolved, turn_id=str(call.meta.get('turn_id') or '')))
+        payload['target_name'] = resolved['target_name']
         payload["shutdown_confirmed"] = False
         payload["outcome_note"] = "Accepted does not prove power-off; an unknown outcome must not be repeated automatically."
         return self._result(payload, status=RuntimeStatus.ERROR if payload.get("status") == "unknown" else RuntimeStatus.OK)

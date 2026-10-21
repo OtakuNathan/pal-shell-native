@@ -11,7 +11,7 @@ import tomllib
 from pal.foundation.sidecar import (SidecarEndpoint, start_sidecar_server, cleanup_sidecar_endpoint,
                                     handle_sidecar_client, dispatch_sidecar_request)
 from pal_shell_worker.protocol import RemoteError
-from pal_shell_contracts import Target
+from pal_shell_contracts import Target, RemoteFailure, resolve_target
 from .slot import RemoteSlot
 
 
@@ -38,16 +38,19 @@ class RemoteHub:
             elif method == 'identity':
                 from pal_shell_worker.metadata import machine_identity
                 result = {'machine_identity': machine_identity()}
+            elif method == 'resolve':
+                result = resolve_target([slot.config for slot in self.slots.values()], params.get('target'))
             elif method == 'list':
                 target = params.get('target')
-                if target is not None and (type(target) is not int or target not in self.slots):
-                    raise RemoteError('invalid_target', 'Target is not configured')
+                if target is not None:
+                    target = resolve_target([slot.config for slot in self.slots.values()], target)['target']
                 selected = self.slots.values() if target is None else (self.slots[target],)
                 result = {'targets': await asyncio.gather(*(s.describe(params.get('refresh', False)) for s in selected))}
             else:
-                slot = self.slots.get(params.get('target'))
-                if slot is None:
-                    raise RemoteError('invalid_target', 'Target is not configured')
+                resolved = resolve_target([slot.config for slot in self.slots.values()], params.get('target'))
+                if params.get('binding') and params['binding'] != resolved['binding']:
+                    raise RemoteError('target_changed', 'Target configuration changed; resolve it again')
+                slot = self.slots[resolved['target']]
                 if method == 'restore_execution':
                     slot.execution.restore(params['records'])
                     result = slot.execution.status()
@@ -78,6 +81,8 @@ class RemoteHub:
             return {'result': result}
         except RemoteError as exc:
             return {'error': exc.payload()}
+        except RemoteFailure as exc:
+            return {'error': {'code': exc.code, 'message': str(exc), 'effect': exc.effect}}
 
     async def close(self):
         await asyncio.gather(*(slot.close() for slot in self.slots.values()))

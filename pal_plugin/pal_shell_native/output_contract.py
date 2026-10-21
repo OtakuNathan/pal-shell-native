@@ -37,13 +37,15 @@ def result_guidance(result):
 
 def output_result(result):
     # Control receipts, epochs, cursors and journal IDs never enter model text.
-    fields = ("session_id", "target", "status", "returncode", "signal", "error",
+    fields = ("session_id", "target", "target_name", "status", "returncode", "signal", "error",
               "stdout", "stderr", "tty", "watching", "has_deadline", "remaining_ms",
               "has_wake", "wake_remaining_ms", "truncated", "output_error", "observation_error")
     payload = {key: result[key] for key in fields if key in result}
     if result.get("status") not in TERMINAL:
         payload["returncode"] = None
     text = render_structured_for_llm(payload)
+    if result.get('target_name'):
+        text += f"\nTarget: {result['target_name']} ({result.get('target', 0)})"
     if result.get("_snapshot_text"):
         text += "\n" + result["_snapshot_text"]
     # The native snapshot has returncode=None on terminal failure only when no

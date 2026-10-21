@@ -113,8 +113,8 @@ REMOTE_RUN_GUIDANCE = RUN_GUIDANCE.model_copy(update={
         "Inspect list_remote for configured management support."
     ),
     "do_not_use_when": RUN_GUIDANCE.do_not_use_when + (
-        " Local file tools do not access remote paths. Use the selected target shell for remote files "
-        "when no corresponding file capability exists."
+        " read_file, edit_file and write_file accept the same target IDs and exact aliases. Use the target shell "
+        "only when the worker lacks the corresponding file capability."
     ),
     "failure_next_steps": RUN_GUIDANCE.failure_next_steps,
     "next_tool_hints": RUN_GUIDANCE.next_tool_hints + (

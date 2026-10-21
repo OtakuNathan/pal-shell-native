@@ -19,10 +19,15 @@ class NativeExtension:
             raise RuntimeError('Update Pal to the matching observation delivery contract before attaching Native')
         if self.resident and not callable(getattr(PalCore, 'start_background_turn', None)):
             raise RuntimeError('Update Pal to support background turn admission before attaching Native')
-        return NativeExecutionRuntime(runtime_root=previous.runtime_root,
+        runtime = NativeExecutionRuntime(runtime_root=previous.runtime_root,
                                       sync_executor=previous.sync_executor,
                                       logical_state=previous.logical_state,
                                       execution_sessions=previous.execution_sessions, result_snapshots=previous.result_snapshots)
+        previous_files = getattr(getattr(previous, 'shell_owner', None), 'files', None)
+        if previous_files is not None:
+            runtime.shell_owner.files.restore(previous_files.snapshot())
+            previous_files.handed_off = True
+        return runtime
 
     def build_provider(self, runtime):
         return runtime.build_introspection_provider()
@@ -57,7 +62,7 @@ class NativeExtension:
 
 class NativePlugin:
     plugin_id = 'remote'  # Retain the installed package identity across the 0.4 upgrade.
-    version = '0.5.0'
+    version = '0.6.0'
 
     def __init__(self, runtime_root):
         self.runtime_root = runtime_root

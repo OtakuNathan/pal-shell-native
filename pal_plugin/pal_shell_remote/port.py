@@ -24,11 +24,16 @@ class HubPort:
             raise RemoteFailure('backend_unavailable', 'Remote plugin generation retired during request', effect='unknown')
         if 'error' in response:
             error = response['error']
-            raise RemoteFailure(error['code'], error['message'], effect=error.get('effect', 'unknown'))
+            raise RemoteFailure(error['code'], error['message'], effect=error.get('effect', 'unknown'),
+                                operation_id=error.get('operation_id', ''))
         return response['result']
 
-    async def request(self, target, method, params, epoch=None):
-        return await self.call('request', {'target': target, 'method': method, 'params': params, 'runtime_epoch': epoch})
+    async def resolve(self, target):
+        return await self.call('resolve', {'target': target})
+
+    async def request(self, target, method, params, epoch=None, *, binding=''):
+        return await self.call('request', {'target': target, 'method': method, 'params': params,
+                                          'runtime_epoch': epoch, 'binding': binding})
 
     async def list(self, refresh=False, *, target=None):
         return (await self.call('list', {'refresh': refresh, 'target': target}))['targets']

@@ -185,7 +185,10 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_and_shutdown_do_not_claim_completed_readiness(self):
         provider = NativeExecutionProvider(runtime=self.runtime)
-        port = SimpleNamespace(call=AsyncMock(return_value={'returncode': 7, 'status': 'start_action_completed', 'target': 1}))
+        route = {'target': 1, 'target_name': 'remote', 'binding': 'configured-target'}
+        port = SimpleNamespace(
+            call=AsyncMock(return_value={'returncode': 7, 'status': 'start_action_completed', 'target': 1}),
+            resolve=AsyncMock(return_value=route))
         shell = SimpleNamespace(_port=lambda: port, privileged=AsyncMock(return_value={'status': 'unknown'}))
         execution = SimpleNamespace(shell_owner=SimpleNamespace(shell=shell))
         call = IntrospectionCall(name='op_exec_remote_start', args={'target': 1, 'action': 'wake'}, meta={'execution_runtime': execution})
@@ -196,6 +199,8 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
         result = await provider.remote_power_async(call)
         self.assertNotEqual(result.status, 'ok')
         self.assertFalse(result.structured['shutdown_confirmed'])
+        port.resolve.assert_awaited_once_with(1)
+        shell.privileged.assert_awaited_once_with(1, 'shutdown', target_route=route, turn_id='')
         shell.privileged.return_value = {'status': 'accepted'}
         result = await provider.remote_power_async(call)
         self.assertEqual(result.status, 'ok')

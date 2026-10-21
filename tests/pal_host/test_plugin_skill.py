@@ -86,7 +86,7 @@ class NativeSkillTests(unittest.TestCase):
             with self.subTest(module=module), patch.dict(sys.modules, {module: None}):
                 result = verify(None)
                 self.assertFalse(result['ok'])
-                self.assertIn('3bfc54b60cbdf0830c66d0b8751f5f9999b26b7f', result['detail'])
+                self.assertIn('matching Pal file-delivery protocol v1 revision', result['detail'])
                 self.assertIn(module, result['detail'])
 
     def test_install_and_activation_require_background_admission(self):

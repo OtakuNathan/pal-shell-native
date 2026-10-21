@@ -36,6 +36,10 @@ jobs:
         run: python tests/test_windows_worker.py -v
         env:
           PYTHONPATH: build/windows/Release;python
+      - name: Test worker-owned file authority
+        run: python tests/test_file_worker.py -v
+        env:
+          PYTHONPATH: build/windows/Release;python
       - name: Assemble isolated experimental worker bundle
         run: |
           $workerPythonRoot = python -c 'import sys; print(sys.base_prefix)'
@@ -51,6 +55,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Worker launcher failed' }
           & "$workerBundle/python/python.exe" tests/test_windows_worker.py -v
           if ($LASTEXITCODE) { throw 'Bundled worker regression failed' }
+          & "$workerBundle/python/python.exe" tests/test_file_worker.py -v
+          if ($LASTEXITCODE) { throw 'Bundled file authority regression failed' }
       - name: Archive prototype and checksum
         run: |
           $workerArchive = 'dist/pal-shell-worker-windows-x86_64-prototype.zip'

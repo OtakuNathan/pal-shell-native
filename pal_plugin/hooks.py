@@ -10,6 +10,9 @@ def verify(context):
         from pal.execution.extensions import ExecutionSlot
         from pal.core import PalCore  # Initialize the host import boundary before execution.
         from pal.execution.runtime import ExecutionRuntime
+        from pal.execution.session_state import FileDeliveryManifest
+        from pal.execution.targets import ExecutionTarget
+        from pal_shell_worker.files import FILE_PROTOCOL_VERSION
         from pal.execution.tool_facade import ToolGuidance
         from pal.memory.service import MemoryService
         from pal.shared.diagnostics import diagnostic_text, exception_diagnostic
@@ -20,6 +23,8 @@ def verify(context):
             raise RuntimeError('Pal lacks background-turn admission required by native shell completion delivery')
         if 'search_enum_fields' not in ToolGuidance.model_fields:
             raise RuntimeError('Pal lacks enum-field tool discovery support')
+        if 'remote' not in FileDeliveryManifest.__dataclass_fields__ or not callable(getattr(ExecutionRuntime, 'unbind_result_history', None)) or FILE_PROTOCOL_VERSION != 1:
+            raise RuntimeError('Pal and worker must support file delivery protocol v1 and history retirement')
         if (not callable(getattr(ExecutionRuntime, "prepare_model_context", None))
             or not callable(getattr(MemoryService, "l1_context_view", None))):
             raise RuntimeError("Pal lacks indexed request visibility and observation delivery support")
@@ -28,5 +33,5 @@ def verify(context):
                 or not hasattr(native.Runtime, 'watch') or not hasattr(rpc, 'channel_request')):
             raise RuntimeError('Incompatible native Runtime/RPC client')
     except (ImportError, RuntimeError) as exc:
-        return {'ok': False, 'detail': f'Install a matching pal-shell-native build with privilege admission and Pal baseline 3bfc54b60cbdf0830c66d0b8751f5f9999b26b7f or a compatible later revision (execution extensions, diagnostics, Bunshin verification and enum-field tool discovery and background turn admission) in the host environment: {exc}'}
+        return {'ok': False, 'detail': f'Install a matching pal-shell-native build with privilege admission and the matching Pal file-delivery protocol v1 revision (execution extensions, diagnostics, Bunshin verification, tool discovery, history retirement and background turn admission) in the host environment: {exc}'}
     return {'ok': True, 'protocol': PROTOCOL_VERSION, 'stdin_version': getattr(native, 'STDIN_VERSION', 0)}

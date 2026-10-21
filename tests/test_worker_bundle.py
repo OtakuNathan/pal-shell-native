@@ -1,5 +1,7 @@
 """Accept a standalone worker process, with no Pal or Python installation inside it."""
 import asyncio
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +49,24 @@ async def main(binary, original=None):
             client = await connect()
             info = await client.request('metadata', {})
             assert info['stdin_version'] == 1, info
+            assert info['file_protocol_version'] == 1, info
+            async def file_payload(value):
+                data = json.dumps(value).encode()
+                ref = {'blob': uuid4().hex, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                await client.request('file_upload_begin', ref)
+                await client.request('file_upload_chunk', {'blob': ref['blob'], 'offset': 0,
+                    'data': base64.b64encode(data).decode()})
+                return ref
+            sync = await file_payload({'scope': 'bundle-files', 'revision': 0, 'live': {}})
+            await client.request('file_sync', {'payload': sync})
+            file_id = uuid4().hex
+            file_args = await file_payload({'scope': 'bundle-files', 'revision': 0, 'action': 'write',
+                'args': {'file_path': str(root / 'remote.txt'), 'content': '\ufeffbundle-file\r\n'}})
+            await client.request('file_execute', {'operation_id': file_id, 'payload': file_args})
+            file_result = await client.request('query', {'operation_id': file_id, 'wait_ms': 5000})
+            assert file_result['state'] == 'complete', file_result
+            assert (root / 'remote.txt').read_bytes() == b'\xef\xbb\xbfbundle-file\r\n'
+            await client.request('file_result_release', {'operation_id': file_id})
             input_id = uuid4().hex
             text = '中文\x00\r\n$HOME $(false) EOF'
             await client.request('submit', {'operation_id': input_id, 'cmd': 'cat', 'stdin': text, 'wait_ms': 5000})

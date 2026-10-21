@@ -9,6 +9,7 @@ Their LICENSE files are installed alongside the wheel in `pal_shell_native_licen
 | [Flux Foundry](https://github.com/OtakuNathan/flux_foundry) | `781375ab57884cbccb84b9d91133c2b2a22a95e9` | MIT |
 | [dynabridge](https://github.com/OtakuNathan/dynabridge) | `0762d81175a6f3172b4a142b026d8392150fca6f` | Apache-2.0 |
 | [libuv](https://github.com/libuv/libuv) | `v1.50.0` | See bundled libuv LICENSE (MIT and component notices) |
+| [Pal file engine](https://github.com/OtakuNathan/Pal) | Exact revision and source hashes in `pal_shell_worker/_file_core/SOURCE.json` | MIT; bundled `_file_core/LICENSE` |
 
 `dependencies/bridge-gil-lifetime.patch` is the pending dynabridge fix carried
 from Pal: destroy Python-owned task captures while still holding the GIL. The
