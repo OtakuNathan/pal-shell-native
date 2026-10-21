@@ -1,3 +1,28 @@
+0.6.0 adds the remote file protocol and one exact target resolver.
+
+- `read_file`, `edit_file` and `write_file` now work on remote targets through an
+  explicit worker file protocol (version 1). The worker keeps file authority:
+  read-before-edit digests, stale-content rejection and bounded chunked transfers
+  return the same receipts as local calls. A worker that does not advertise the
+  protocol rejects these calls with `file_protocol_unsupported` instead of
+  guessing at a fallback.
+- Every entry point resolves a target with one exact registry lookup: an integer
+  ID, or an exact configured name or shortcut. Numeric strings are aliases, never
+  IDs; unknown, ambiguous or non-positive values fail closed with `invalid_target`
+  or `ambiguous_target`. Zero remains the local host.
+- Plugin 0.6.0 verifies the host at load for the worker input and file modules,
+  file delivery protocol v1 and history retirement, and refuses to load against
+  an older host runtime instead of starting partially.
+- Activation: install the 0.6.0 native wheel on the Pal host, install
+  plugin-remote-0.6.0.palpkg, then replace each worker bundle and its running
+  process. Host and plugin move together; a worker on an older bundle keeps its
+  execution tools and gains the file trio only after its bundle and process are
+  replaced.
+- Native API 2 and remote protocol 3 are unchanged.
+- CI checks the exported file engine against Pal
+  `c26c25fb45cd122a2ac92cd602dceb6a48ad3674`; a later unrelated Pal commit does not
+  change the exported engine.
+
 Unreleased: temporary side-question execution ownership.
 
 - Calls marked `transient_execution` retain temporary shell-session ownership.

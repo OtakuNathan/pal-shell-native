@@ -221,7 +221,8 @@ class TargetTests(unittest.TestCase):
     def test_exact_alias_resolution_is_fail_closed(self):
         first = Target(5, 'surface', 'worker', 'client', '/key', '/socket', shortcut='surface')
         self.assertEqual(resolve_target([first], 'surface')['target'], 5)
-        for value in (True, '5', ' Surface ', 'missing', -1):
+        self.assertEqual(resolve_target([first], 5)['target'], 5)
+        for value in (True, '5', ' Surface ', 'missing', -1, 0):
             with self.subTest(value=value), self.assertRaises(RemoteFailure):
                 resolve_target([first], value)
         second = Target(6, 'other', 'worker2', 'client', '/key', '/socket', shortcut='surface')
