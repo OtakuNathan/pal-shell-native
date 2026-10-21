@@ -110,7 +110,7 @@ class FileWorkerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RemoteError) as error:
             await self.worker.handle('file_execute', {'operation_id': oid, 'payload': ref})
         self.assertEqual(error.exception.code, 'operation_conflict')
-        self.assertEqual(path.read_text(), content)
+        self.assertEqual(path.read_bytes(), content.encode('utf-8'))
 
     async def test_corrupted_upload_has_no_file_effect(self):
         ref = {'blob': 'bad', 'size': 3, 'sha256': '0' * 64}
