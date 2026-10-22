@@ -1,6 +1,7 @@
 """Resident, single-decision approval on the originating authenticated route."""
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -11,6 +12,11 @@ from pal_shell_contracts import RemoteFailure
 
 logger = logging.getLogger(__name__)
 CLOSE_TIMEOUT_SECONDS = 5
+
+
+def _code_block(text, language=''):
+    fence = '`' * max(3, 1 + max((len(match[0]) for match in re.finditer(r'`+', text)), default=0))
+    return f'{fence}{language}\n{text}\n{fence}'
 
 
 @dataclass
@@ -51,9 +57,9 @@ class ShellApprovals:
         approved_command = (str(management['action']) + ' ' + ' '.join(management.get('packages', []))) if management and management['action'] != 'shell_command' else args.get('cmd', 'shutdown')
         directory = management.get('cwd') if management and management['action'] == 'shell_command' else args.get('cwd')
         stdin = args.get('stdin')
-        input_text = '' if stdin is None else f"\n\nStandard input ({len(stdin.encode('utf-8'))} UTF-8 bytes, then EOF):\n{stdin}"
+        input_text = '' if stdin is None else f"\n\nStandard input ({len(stdin.encode('utf-8'))} UTF-8 bytes, then EOF):\n{_code_block(stdin)}"
         text = (f"{request.title}\n{request.impact}\nRuntime: {approval['runtime_epoch']}\n"
-                f"Directory: {directory or '(worker default)'}\n\n{approved_command}{input_text}\n\n"
+                f"Directory: {directory or '(worker default)'}\n\nCommand:\n{_code_block(approved_command, 'sh')}{input_text}\n\n"
                 "Approval applies to this request only. Execution results are reported separately.")
         interaction = InteractionMessageSpec(identifier, 'approval_request', route, text,
             ((button('Approve once', 'accept'), button('Reject', 'reject')),),

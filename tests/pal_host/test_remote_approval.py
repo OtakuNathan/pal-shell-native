@@ -28,7 +28,7 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
                         args={'decision': 'accept'}, route=spec.route, trusted_actor='owner'))
                 return True
             core._deliver_control_delivery_async = deliver
-            command = 'pacman -S --noconfirm cmake; printf "a && b"'
+            command = 'pacman -S --noconfirm cmake; printf "a && b ```"'
             args = {'action': 'sudo', 'cmd': command, 'cwd': '/var/tmp',
                     'stdin': 'print("approved stdin")\n',
                     'management': {'action': 'shell_command', 'cmd': command, 'cwd': '/var/tmp'}}
@@ -36,6 +36,7 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
                      'expires_at': datetime.now(timezone.utc).timestamp() + 30}
             await approvals.request('turn', target, args, grant)
             self.assertIn(command, cards[0].text)
+            self.assertIn(f'Command:\n````sh\n{command}\n````', cards[0].text)
             self.assertIn(args['stdin'], cards[0].text)
             self.assertIn('Standard input', cards[0].text)
             self.assertIn('/var/tmp', cards[0].text)

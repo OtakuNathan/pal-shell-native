@@ -39,7 +39,8 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
         core=SimpleNamespace(state=SimpleNamespace(active_turns={'turn':SimpleNamespace(delivery_binding=binding)}))
         approvals=ShellApprovals(SimpleNamespace(core=core))
         sent=asyncio.Event();cards=[]
-        bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=12)))
+        bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=12)),
+                            edit_message_text=AsyncMock())
         self.endpoint.application=SimpleNamespace(bot=bot)
         async def deliver(delivery,**kwargs):
             cards.append(delivery.interaction)
@@ -47,6 +48,8 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
                 await self.endpoint._open_or_update_interaction_async(
                     binding.response_handle,spec=delivery.interaction,allow_update=False)
                 sent.set()
+            else:
+                await self.endpoint._resolve_interaction_async(delivery.interaction)
             return True
         core._deliver_control_delivery_async=deliver
         task=asyncio.create_task(approvals.request('turn',1,{'action':'sudo','cmd':'apt update'},
@@ -54,6 +57,8 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
              'expires_at':datetime.now(timezone.utc).timestamp()+30}))
         try:
             await asyncio.wait_for(sent.wait(),2)
+            self.assertEqual(bot.send_message.call_args.kwargs['parse_mode'], 'MarkdownV2')
+            self.assertIn('```sh\napt update\n```', bot.send_message.call_args.kwargs['text'])
             button=bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard[0][0]
             callback=SimpleNamespace(data=button.callback_data,from_user=SimpleNamespace(id=42),
                 message=SimpleNamespace(chat=SimpleNamespace(id=100)),answer=AsyncMock())
@@ -66,6 +71,9 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task,2)
             self.assertIn('Approved once',cards[-1].text)
             self.assertFalse(cards[-1].buttons)
+            self.assertEqual(bot.edit_message_text.call_args.kwargs['parse_mode'], 'MarkdownV2')
+            self.assertIn('```sh\napt update\n```', bot.edit_message_text.call_args.kwargs['text'])
+            self.assertIsNone(bot.edit_message_text.call_args.kwargs['reply_markup'])
         finally:
             if not task.done():task.cancel()
             await asyncio.gather(task,return_exceptions=True)

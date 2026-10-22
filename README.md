@@ -291,6 +291,13 @@ same authenticated Approve once / Reject interaction. Commands must use
 approval does not supply an OS password or override sudoers. If OS authorization
 is unavailable, the command reports the sudo failure without a password prompt.
 
+Approval cards separate the exact command/script into a shell code block and
+standard input into its own code block. The target, runtime and directory remain
+outside the blocks. Telegram needs the matching Pal Telegram provider to render
+the blocks, including the card update after a decision. This presentation change
+needs only the updated `remote` plugin and Telegram provider activated at an idle
+boundary; it requires no worker update, native binary replacement or core restart.
+
 Ordinary local and remote Linux children set `no_new_privs` before shell startup.
 Nested scripts, pipelines, absolute sudo paths and PTY input therefore cannot gain
 privilege via setuid/setgid executables or file capabilities. A literal `sudo`

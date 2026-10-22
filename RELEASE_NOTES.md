@@ -1,3 +1,16 @@
+Unreleased: clearer privilege approval cards.
+
+- Display the exact command/script in a fenced shell code block and optional
+  standard input in a separate code block. Embedded backticks remain literal.
+- The paired Pal Telegram provider renders the blocks when opening and resolving
+  approval cards. Approve once / Reject and authenticated decision ownership
+  retain their existing behavior.
+- Activate the updated remote plugin and Telegram provider at an idle lifecycle
+  boundary. This display change needs no core restart, native binary replacement
+  or worker upgrade.
+- CI pins Pal `a88bf83547abd1bb23a792a26fe6924ae8cae79f` so the integration tests
+  exercise the matching Telegram provider as well as the host file contracts.
+
 0.6.1 fixes file submissions refused before execution.
 
 - A `file_execute` refusal with `effect=not_started` now clears the host's

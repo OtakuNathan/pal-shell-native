@@ -343,8 +343,11 @@ This test instance is separate from live Pal activation.
 ## Privilege and machine lifecycle
 
 A resident approval request uses the existing interaction/control delivery path.
-It displays the exact target, epoch, command/script and working directory. Only
-Approve once / Reject are offered; there is no Accept All or session-wide grant.
+It displays the exact target, epoch, command/script and working directory. The
+command/script uses a fenced shell code block; optional standard input uses a
+separate code block with its UTF-8 byte count and EOF notice. A fence longer than
+any backtick run in the content keeps literal command text inside the block.
+Only Approve once / Reject are offered; there is no Accept All or session-wide grant.
 The server-held decision is tied to the original authenticated actor and route.
 No `confirmed=True`, caller-provided actor or tool argument is approval authority.
 After acceptance, the Hub signs the worker's ten-minute, single-use grant. The
@@ -354,7 +357,10 @@ The in-repository socket provider supplies `trusted_actor` from its actual sessi
 Other channel providers must supply their authenticated sender identity in
 `InteractionResult.trusted_actor`; it must match the originating binding's
 user/account/session identity. Providers without this evidence cannot approve.
-External Telegram/other provider packages are not modified by this change.
+The matching Pal Telegram provider renders approval code blocks both when opening
+the card and when closing it after a decision. Update and activate `remote` and
+that provider together for this presentation; no worker upgrade, native binary
+replacement or core restart is needed for the display change alone.
 Bunshin scopes do not inherit the resident remote port or its identities.
 
 The user worker is not elevated. Linux uses signed management operations,
