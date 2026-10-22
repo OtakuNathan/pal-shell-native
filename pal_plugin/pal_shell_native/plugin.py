@@ -62,7 +62,7 @@ class NativeExtension:
 
 class NativePlugin:
     plugin_id = 'remote'  # Retain the installed package identity across the 0.4 upgrade.
-    version = '0.6.0'
+    version = '0.6.1'
 
     def __init__(self, runtime_root):
         self.runtime_root = runtime_root

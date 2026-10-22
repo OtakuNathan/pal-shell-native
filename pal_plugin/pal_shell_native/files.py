@@ -274,7 +274,17 @@ class RemoteFiles:
                                         error_code='file_context_changed')
             state['unresolved'][oid] = {'action': action, 'call_id': call_id}
             try:
-                await self._request(state, 'file_execute', {'operation_id': oid, 'payload': ref})
+                try:
+                    await self._request(state, 'file_execute', {'operation_id': oid, 'payload': ref})
+                except RemoteFailure as exc:
+                    if exc.effect != 'not_started':
+                        raise
+                    # Only the submission's own refusal proves no file effect.
+                    # A query refusal cannot settle an already submitted write.
+                    del state['unresolved'][oid]
+                    self.discard(call_id)
+                    raise ToolRejectedError(str(exc), error_code=exc.code,
+                                            details={'operation_id': oid}) from exc
                 payload = await self._query(state, oid)
             except RemoteFailure as exc:
                 # A failure to query says nothing about the preceding write.

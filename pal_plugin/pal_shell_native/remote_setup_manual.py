@@ -40,7 +40,7 @@ package, execution:extensions port, and remote plugin discovery.
 The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
 it is not built into Pal. Install the matching native wheel in the host interpreter,
 then use `install_package` (or pal package install for offline preparation) with
-plugin-remote-0.6.0.palpkg. If the runtime still contains the retired managed
+plugin-remote-0.6.1.palpkg. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
 packages/previous/builtin/remote and restores it on publication failure. Do not

@@ -1,3 +1,22 @@
+0.6.1 fixes file submissions refused before execution.
+
+- A `file_execute` refusal with `effect=not_started` now clears the host's
+  unresolved and pending records and reports the original rejection code.
+  Worker draining and a full operation journal no longer leave phantom work
+  blocking later file calls or plugin lifecycle changes.
+- Lost submission replies still retain their original operation ID. A query
+  refusal, even with `effect=not_started`, describes only the query and cannot
+  settle an earlier write. Reconciliation never replays the write.
+- Four regression tests cover draining, journal capacity, a lost submission reply
+  after execution, and a refused query after submission.
+- Native API 2, remote protocol 3 and file protocol 1 are unchanged; 0.6.0 workers
+  remain compatible. This fix is in the host plugin. Install
+  plugin-remote-0.6.1.palpkg through Pal's package lifecycle at an idle boundary
+  and verify activation. Existing native binaries and worker processes do not
+  need replacement for this fix alone.
+- CI retains the matching Pal file-engine baseline
+  `c26c25fb45cd122a2ac92cd602dceb6a48ad3674`.
+
 0.6.0 adds the remote file protocol and one exact target resolver.
 
 - `read_file`, `edit_file` and `write_file` now work on remote targets through an

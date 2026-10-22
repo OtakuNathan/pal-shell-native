@@ -123,6 +123,93 @@ class RemoteFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reconciled.exception.error_code, 'file_operation_reconciled')
         self.assertEqual(self.path.read_text(), 'first first\nsecond\nthird\n')
 
+    async def test_rejected_submission_does_not_leave_unresolved_work(self):
+        self.worker.draining = True
+        with self.assertRaises(ToolRejectedError) as rejected:
+            await self.invoke('read')
+        self.assertEqual(rejected.exception.error_code, 'worker_draining')
+        self.assertFalse(self.worker.operations)
+        state = next(iter(self.files.scopes.values()))
+        self.assertFalse(state['unresolved'])
+        self.assertFalse(state['pending'])
+        self.assertFalse(self.files.has_work)
+        self.worker.draining = False
+        call, read = await self.invoke('read')
+        await self.deliver(call, read)
+        _, edited = await self.invoke('edit', edits=[{'old_string': 'first', 'new_string': 'updated'}])
+        self.assertEqual(edited.status, 'ok')
+        self.assertEqual(self.path.read_text(), 'updated\nsecond\nthird\n')
+
+    async def test_full_journal_rejection_does_not_leave_unresolved_work(self):
+        self.worker.config = replace(self.worker.config, operation_limit=1)
+        call, read = await self.invoke('read')
+        await self.deliver(call, read)
+        with self.assertRaises(ToolRejectedError) as rejected:
+            await self.invoke('read')
+        self.assertEqual(rejected.exception.error_code, 'operation_capacity')
+        self.assertEqual(len(self.worker.operations), 1)
+        state = next(iter(self.files.scopes.values()))
+        self.assertFalse(state['unresolved'])
+        self.assertFalse(state['pending'])
+        self.assertFalse(self.files.has_work)
+        self.worker.config = replace(self.worker.config, operation_limit=2)
+        _, read = await self.invoke('read')
+        self.assertEqual(read.status, 'ok')
+
+    async def test_lost_submission_reply_keeps_original_operation(self):
+        call, read = await self.invoke('read')
+        await self.deliver(call, read)
+        request = self.port.request
+        async def lose_submission_reply(target, method, params, epoch=None, *, binding=''):
+            result = await request(target, method, params, epoch, binding=binding)
+            if method == 'file_execute':
+                raise RemoteFailure('transport_lost', 'Injected lost submission reply', effect='unknown')
+            return result
+        self.port.request = lose_submission_reply
+        with self.assertRaises(ToolExecutionError) as unknown:
+            await self.invoke('edit', edits=[{'old_string': 'first', 'new_string': 'first first'}])
+        self.assertEqual(unknown.exception.error_code, 'file_operation_unresolved')
+        state = next(iter(self.files.scopes.values()))
+        self.assertEqual(len(state['unresolved']), 1)
+        self.assertTrue(self.files.has_work)
+        await asyncio.gather(*tuple(self.worker.tasks))
+        self.assertEqual(self.path.read_text(), 'first first\nsecond\nthird\n')
+        self.port.request = request
+        with self.assertRaises(ToolExecutionError) as reconciled:
+            await self.invoke('edit', edits=[{'old_string': 'first', 'new_string': 'first first', 'replace_all': True}])
+        self.assertEqual(reconciled.exception.error_code, 'file_operation_reconciled')
+        self.assertFalse(state['unresolved'])
+        self.assertEqual(len(self.worker.operations), 2)
+        self.assertEqual(self.path.read_text(), 'first first\nsecond\nthird\n')
+
+    async def test_query_not_started_does_not_clear_submitted_operation(self):
+        call, read = await self.invoke('read')
+        await self.deliver(call, read)
+        request = self.port.request
+        async def reject_query(target, method, params, epoch=None, *, binding=''):
+            if method == 'query':
+                raise RemoteFailure('transport_unavailable', 'Query did not start', effect='not_started')
+            return await request(target, method, params, epoch, binding=binding)
+        self.port.request = reject_query
+        with self.assertRaises(ToolExecutionError) as unknown:
+            await self.invoke('edit', edits=[{'old_string': 'first', 'new_string': 'first first'}])
+        self.assertEqual(unknown.exception.error_code, 'file_operation_unresolved')
+        state = next(iter(self.files.scopes.values()))
+        self.assertEqual(len(state['unresolved']), 1)
+        self.assertTrue(self.files.has_work)
+        await asyncio.gather(*tuple(self.worker.tasks))
+        self.assertEqual(self.path.read_text(), 'first first\nsecond\nthird\n')
+        with self.assertRaises(ToolExecutionError) as still_unknown:
+            await self.invoke('read')
+        self.assertEqual(still_unknown.exception.error_code, 'file_operation_unresolved')
+        self.assertEqual(len(state['unresolved']), 1)
+        self.port.request = request
+        with self.assertRaises(ToolExecutionError) as reconciled:
+            await self.invoke('read')
+        self.assertEqual(reconciled.exception.error_code, 'file_operation_reconciled')
+        self.assertFalse(state['unresolved'])
+        self.assertEqual(len(self.worker.operations), 2)
+
     async def test_budgeted_manifest_and_checkpoint_restore(self):
         from pal.execution.tool_facade import CompleteResult, EffectOutcome
         self.path.write_text('A' * 1500 + '\nsecond\nthird\n')
