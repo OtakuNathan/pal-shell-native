@@ -121,6 +121,36 @@ class FileWorkerTests(unittest.IsolatedAsyncioTestCase):
             await self.worker.handle('file_execute', {'operation_id': 'bad', 'payload': ref})
         self.assertNotIn('bad', self.worker.operations)
 
+    @unittest.skipIf(os.name == 'nt', 'Directory fsync is not available on Windows')
+    async def test_applied_edit_failure_receipts_survive_worker_transport(self):
+        import stat
+        from unittest.mock import patch
+
+        path = self.root / 'source.txt'
+        path.write_text('first\nsecond\n')
+        await self.sync()
+        oid, read = await self.execute('read', {'file_path': str(path)})
+        self.live['read-result'] = {'operation_id': oid, 'manifest': read['context_delivery']}
+        self.revision += 1
+        await self.sync()
+        fsync = os.fsync
+        def fail_directory_sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory durability failed')
+            return fsync(fd)
+        with patch('pal_shell_worker._file_core.file_state.os.fsync', side_effect=fail_directory_sync):
+            _, result = await self.execute('edit', {'file_path': str(path), 'edits': [
+                {'old_string': 'first', 'new_string': 'changed'},
+                {'old_string': 'missing', 'new_string': 'unused'},
+            ]})
+        self.assertEqual(path.read_text(), 'changed\nsecond\n')
+        self.assertEqual(result['effect_receipt']['outcome'], 'applied')
+        self.assertIn('directory durability failed', result['llm_text'])
+        self.assertIn('"applied_edit_indices":[0]', result['llm_text'])
+        self.assertIn('"edit_index":1', result['llm_text'])
+        self.assertNotIn('Traceback', result['llm_text'])
+        self.assertIn('Do not repeat', result['recovery_hint'])
+
 
 if __name__ == '__main__':
     unittest.main()

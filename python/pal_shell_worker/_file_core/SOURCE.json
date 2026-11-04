@@ -1,14 +1,14 @@
 {
-  "pal_revision": "82608c7257c2f701b7edcf41a38c690361f78f6e",
+  "pal_revision": "15f62fc15732c65fcb323d2f3e06b11213ae4441",
   "source_sha256": {
-    "src/pal/execution/file_core_contracts.py": "f84681b247b0fc37a4d31cddab83d016f29e399a4eb5ec8da16bdcd08ab6bc60",
-    "src/pal/execution/file_edit.py": "af1005af22bf4d1cb0b38926656862e2d9968aa251ff5bd0ab59620db48c3321",
-    "src/pal/execution/file_read.py": "08846a905f97f67c0f4ff3e6d1f1e0de937b007b67cc120b34695c54532ce6d1",
-    "src/pal/execution/file_registry.py": "954a47396cbbc3d411df7541e213a9f25af60a0f582d23a4601dab5aefbdaad5",
-    "src/pal/execution/file_state.py": "fda20555fb937982c454f692bd9cee37a708bf4d517bd0aa16d6a49a284e7acf",
+    "src/pal/execution/file_core_contracts.py": "138d84b8de2df8fd461d4d19ecc0a972aea4aea047c8c33831ecf1dca0faaeb7",
+    "src/pal/execution/file_edit.py": "c74ccf5db607d478e9d81d09ce56638e422e48c8dbe2c174ccca0f7c9645897a",
+    "src/pal/execution/file_read.py": "ecfba7348de39c121507f7715d6c83de5e30272904ce2d5e0fc0de0ef01d3bde",
+    "src/pal/execution/file_registry.py": "1b255731047851ad20b6767b529d2d9813dc4471e6e07ab3bc6b4acf0a4eed17",
+    "src/pal/execution/file_state.py": "b2e5c75ba6f4107b27506edc3bf69ebc742c95855dc5c0bf62b7b15d394878ef",
     "src/pal/execution/file_tool_contracts.py": "c5cf3ae546c69aac41d88bd9339e97c6b99a1e820d9df688a557eba6917d2d18",
-    "src/pal/execution/file_write.py": "ab241df33450654d5aac4902776f0555b0ca013f594e5ac02239b119639b49c6",
+    "src/pal/execution/file_write.py": "796d946940d0b6a6b0016e9517712895333e8281d90e312c8c48e7fdee8a5b7a",
     "src/pal/execution/session_state.py": "bab28d9a7d2276b4663d426f6277f5df9b696117847400825f111302be3b8f37",
-    "src/pal/foundation/diagnostics.py": "46b682a77ee96996a5898dcdf87cb29d2b3e64a9b1cbbf007edc1432738411f6"
+    "src/pal/foundation/diagnostics.py": "51d6d2cba2341cae3fc69cc6953b22c7a6fa588dd7adb614556743f4afdd5336"
   }
 }

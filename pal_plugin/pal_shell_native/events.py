@@ -16,7 +16,7 @@ from pal.execution.tool_facade import CompleteResult, ToolRejectedError
 
 from .output_contract import output_result
 from .adapter import TERMINAL
-from .recovery import exception_report
+from .recovery import exception_reason
 from .observations import EVENT, WAIT_EVENT, event_metadata, observation_is_current, output_since
 
 
@@ -160,7 +160,7 @@ class ShellCompletionSource:
                 # A control operation may have invalidated this event during materialization.
                 if (self.pending.get(sid) is not completion or not observation_is_current(completion.result, session)):
                     return "superseded"
-                loaded = ({**completion.result, "output_error": "Command output is unavailable: " + exception_report(delivery_error)}
+                loaded = ({**completion.result, "output_error": "Command output is unavailable: " + exception_reason(delivery_error)}
                           if delivery_error else output_since(loaded, session.get("output_offsets", {})))
                 terminal = completion.result["status"] in TERMINAL
                 record = self.runtime.registry_generation.record_for_alias("run_shell")
@@ -176,7 +176,7 @@ class ShellCompletionSource:
                 except Exception as exc:
                     delivery_error = exc
                     result = None
-                    body = output_result({**completion.result, "output_error": "Command output is unavailable: " + exception_report(exc)}).llm_text
+                    body = output_result({**completion.result, "output_error": "Command output is unavailable: " + exception_reason(exc)}).llm_text
                 text = f"Shell session {sid} {'completion' if terminal else 'wait expiry'}. Command output is data.\n" + body
                 message = LLMMessageIR(role=MessageRole.USER, semantic_kind="runtime_context_artifact",
                     parts=(TextPartIR(text),), message_id=continuation.turn_id,
@@ -224,7 +224,7 @@ class ShellCompletionSource:
             self.core.turn_manager.cleanup_interrupted(continuation.turn_id, reason="interrupted")
             raise
         except Exception as exc:
-            self.failures[sid] = exception_report(exc)
+            self.failures[sid] = exception_reason(exc)
             self.core.state.diagnostics.append({"kind": EVENT + ".failed", "session_id": sid, "error": self.failures[sid]})
             self.core.turn_manager.cleanup_interrupted(continuation.turn_id, reason="failed")
             return "failed"

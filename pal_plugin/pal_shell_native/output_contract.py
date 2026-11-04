@@ -7,6 +7,7 @@ from pal.execution.contracts import CapabilityResult
 from pal.execution.tool_facade import EffectOutcome, EffectReceipt
 from pal.shared.result_rendering import render_structured_for_llm
 from pal.shared import RuntimeStatus
+from pal.shared.diagnostics import diagnostic_reason
 
 from .adapter import TERMINAL
 from .guidance import NONZERO_EXIT_GUIDANCE, RUNNING_SESSION_GUIDANCE
@@ -43,6 +44,9 @@ def output_result(result):
     payload = {key: result[key] for key in fields if key in result}
     if result.get("status") not in TERMINAL:
         payload["returncode"] = None
+    for key in ("error", "output_error", "observation_error"):
+        if payload.get(key):
+            payload[key] = diagnostic_reason(payload[key])
     text = render_structured_for_llm(payload)
     if result.get('target_name'):
         text += f"\nTarget: {result['target_name']} ({result.get('target', 0)})"

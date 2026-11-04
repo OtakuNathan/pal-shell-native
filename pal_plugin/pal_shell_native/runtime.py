@@ -16,7 +16,7 @@ from .output_contract import PendingOutput, output_result
 from .tools import session_affordances
 from .capabilities import SESSION_CAPABILITIES
 from pal_shell_contracts import RemoteFailure
-from .recovery import retry_read, exception_report, LOGGER
+from .recovery import retry_read, exception_reason, LOGGER
 
 
 REMOTE_PENDING_BYTES = 64 * 1024 * 1024
@@ -173,7 +173,7 @@ class NativeShellOwner:
                     turn_id=pending.turn_id, call_id=tool_call.call_id, budget=call.meta.get('budget')),
                 stage="output", identity=tool_call.call_id))
         except Exception as exc:
-            pending.failure = ("Command output could not be saved: " + exception_report(exc) +
+            pending.failure = ("Command output could not be saved: " + exception_reason(exc) +
                 ". Original output is retained. After resolving storage availability, retry exporting this retained output; do not rerun the command.")
             pending.raw = output_result({**result, "output_error": pending.failure})
         return pending.raw
@@ -579,12 +579,12 @@ class NativeExecutionRuntime(ExecutionRuntime):
                             "execution_runtime": self, "budget": budget}), recovered)
                     return output_result(recovered)
                 except Exception as recovery_exc:
-                    recovery_error = "\nOutcome reconciliation also failed:\n" + exception_report(recovery_exc)
+                    recovery_error = "\nOutcome reconciliation also failed:\n" + exception_reason(recovery_exc)
                     LOGGER.warning("shell operation unresolved identity=%s", exc.operation_id)
             hints = [ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {}},
                                    reason="Check whether the execution target is available.")]
             receipt = EffectReceipt(outcome=EffectOutcome(exc.effect), receipt={"operation_id": exc.operation_id})
-            message = exception_report(exc) + recovery_error
+            message = exception_reason(exc) + recovery_error
             if exc.effect == "unknown":
                 message += "\nThe requested shell operation may have taken effect; its outcome could not be confirmed. Do not repeat it automatically."
             raise ToolExecutionError(message, error_code=exc.code, effect_receipt=receipt,
@@ -684,7 +684,7 @@ class NativeExecutionRuntime(ExecutionRuntime):
                     try:
                         recovered = self._normalize_invocation_result(record, call, pending.raw, budget=kwargs.get("budget"), turn_id=kwargs.get("turn_id"))
                     except Exception as exc:
-                        recovery_errors.append(exception_report(exc))
+                        recovery_errors.append(exception_reason(exc))
                         continue
                     if isinstance(recovered, (CompleteResult,)):
                         # Retried normalization goes through the same shared

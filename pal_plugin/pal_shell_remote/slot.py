@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pal.shared.diagnostics import exception_diagnostic, diagnostic_text, exception_report, exception_summary
+from pal.shared.diagnostics import diagnostic_text, exception_reason
 from pal.foundation import utc_now
 
 import asyncio
@@ -260,7 +260,7 @@ class RemoteSlot:
                 except (OSError, TimeoutError, ValueError) as exc:
                     await self._disconnect()
                     raise RemoteError('connection_unavailable',
-                        'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_diagnostic(exc) + '; SSH stderr: ' + self._ssh_diagnostic()) from exc
+                        'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_reason(exc) + '; SSH stderr: ' + self._ssh_diagnostic()) from exc
                 except BaseException:
                     await self._disconnect()
                     raise
@@ -304,8 +304,8 @@ class RemoteSlot:
                     self.expected_offline = False
             except RemoteError as exc:
                 reachable = False
-                self.last_error = exception_summary(exc)
-                self.probe_details = {"code": exc.code, "error": exception_report(exc)}
+                self.last_error = exception_reason(exc)
+                self.probe_details = {"code": exc.code, "error": self.last_error}
         power = (self.cached or {}).get('power')
         shutdown = None if power is None else bool(power.get('shutdown') and power.get('policy') != 'disabled')
         return {'target': self.config.target, 'name': self.config.name, 'shortcut': self.config.shortcut, 'static': self.config.static,

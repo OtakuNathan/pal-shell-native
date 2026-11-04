@@ -121,16 +121,19 @@ class ContractReviewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('partial output', text)
                 self.assertIn(hint, text)
 
-    async def test_output_save_failure_preserves_full_cause_chain_for_model(self):
+    async def test_output_save_failure_keeps_root_for_model_and_chain_in_logs(self):
         try:
             raise PermissionError('underlying output-store cause')
         except PermissionError as cause:
             error = ValueError('save failed ' + 'x' * 5000 + ' diagnostic-tail')
             error.__cause__ = cause
-        with patch('pal_shell_native.snapshot_delivery.materialize_delivery', side_effect=error):
+        with self.assertLogs('pal.failure.diagnostics', level='WARNING') as logs, patch(
+                'pal_shell_native.snapshot_delivery.materialize_delivery', side_effect=error):
             result = await self.tool('run_shell', {'cmd': 'printf retained'})
         self.assertIn('underlying output-store cause', result.llm_text)
-        self.assertIn('diagnostic-tail', result.llm_text)
+        self.assertNotIn('diagnostic-tail', result.llm_text)
+        self.assertNotIn('Traceback', result.llm_text)
+        self.assertIn('diagnostic-tail', '\n'.join(logs.output))
         action = result.invocation_result.affordances[0]
         recovered = await self.tool(action.tool, dict(action.arguments))
         self.assertIn('retained', recovered.llm_text)
