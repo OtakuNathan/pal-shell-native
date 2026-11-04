@@ -1,5 +1,5 @@
 {
-  "pal_revision": "15f62fc15732c65fcb323d2f3e06b11213ae4441",
+  "pal_revision": "68b4f963032cd244171f8cad3974f5c1aa8daca9",
   "source_sha256": {
     "src/pal/execution/file_core_contracts.py": "138d84b8de2df8fd461d4d19ecc0a972aea4aea047c8c33831ecf1dca0faaeb7",
     "src/pal/execution/file_edit.py": "c74ccf5db607d478e9d81d09ce56638e422e48c8dbe2c174ccca0f7c9645897a",
@@ -9,6 +9,6 @@
     "src/pal/execution/file_tool_contracts.py": "c5cf3ae546c69aac41d88bd9339e97c6b99a1e820d9df688a557eba6917d2d18",
     "src/pal/execution/file_write.py": "796d946940d0b6a6b0016e9517712895333e8281d90e312c8c48e7fdee8a5b7a",
     "src/pal/execution/session_state.py": "bab28d9a7d2276b4663d426f6277f5df9b696117847400825f111302be3b8f37",
-    "src/pal/foundation/diagnostics.py": "51d6d2cba2341cae3fc69cc6953b22c7a6fa588dd7adb614556743f4afdd5336"
+    "src/pal/foundation/diagnostics.py": "6b79e53b8b761a1a6246c52806c0fc9d0a273f11e671ee99de445058a77e4a05"
   }
 }

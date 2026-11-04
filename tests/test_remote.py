@@ -22,6 +22,14 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.management_probe = patch('pal_shell_worker.privilege.management_status', new=AsyncMock(return_value={'ok':True,'allowed_actions':['shutdown']}))
         self.management_probe.start()
         self.addCleanup(self.management_probe.stop)
+        # /usr/bin/true stands in for the signed helper in these protocol tests.
+        # Hosted runners can make system paths group-writable; their permissions
+        # are not the management policy under test.
+        from pal_shell_worker.privilege import trusted_executable
+        self.trusted_helper = patch('pal_shell_worker.privilege.trusted_executable',
+            side_effect=lambda path: path == '/usr/bin/true' or trusted_executable(path))
+        self.trusted_helper.start()
+        self.addCleanup(self.trusted_helper.stop)
         self.clients = []
         self.client = await self.connect()
 

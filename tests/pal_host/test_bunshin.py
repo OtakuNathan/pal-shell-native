@@ -448,7 +448,7 @@ asyncio.run(main())
 """
         self.install_worker(self.root)
         argv, env = build_sandboxed_runner_invocation(runtime_root=self.root, pack=pack,
-            argv=[sys.executable, "-c", script], env={"PATH": os.environ["PATH"], "PAL_SHELL_BACKEND": "native",
+            argv=[str(Path(sys.executable).resolve()), "-c", script], env={"PATH": os.environ["PATH"], "PAL_SHELL_BACKEND": "native",
                 "PYTHONPATH": os.pathsep.join([str(Path(_pal_shell_runtime.__file__).parent), str(Path(__file__).resolve().parents[2] / "pal_plugin")]), "PAL_TEST_HIDDEN": str(hidden)})
         result = await asyncio.to_thread(subprocess.run, argv, env=env, cwd=repo, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
