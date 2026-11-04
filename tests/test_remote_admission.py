@@ -226,7 +226,8 @@ class SlotQueueTests(unittest.IsolatedAsyncioTestCase):
             return result
         with patch('pal_shell_worker.privilege.management_status', AsyncMock(
                 return_value={'ok': True, 'allowed_actions': ['shell_command']})), patch(
-                'pal_shell_worker.privilege.execute_privileged', uncertain_execution):
+                'pal_shell_worker.privilege.execute_privileged', uncertain_execution), patch(
+                'pal_shell_worker.privilege.trusted_executable', side_effect=lambda path: path == '/usr/bin/true'):
             try:
                 prepared = await self.slot.request('prepare_privileged', {
                     'operation_id': 'signed', 'action': 'sudo', 'target': 1,
