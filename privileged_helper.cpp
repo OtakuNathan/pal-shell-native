@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if ((argc != 3 && argc != 5) || geteuid() != 0 || argv[1][0] != '/') return 126;
-    std::unique_ptr<dynabridge::pal_shell::InputFile> approved_input;
+    std::unique_ptr<portal::pal_shell::InputFile> approved_input;
     if (argc == 5) {
 #ifdef __APPLE__
         try {
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
             }
             if (actual != argv[4]) return 126;
             // The worker must not be able to modify input after verification.
-            approved_input = std::make_unique<dynabridge::pal_shell::InputFile>(input);
+            approved_input = std::make_unique<portal::pal_shell::InputFile>(input);
             if (dup2(approved_input->fd(), 0) < 0) return 126;
         } catch (...) { return 126; }
 #else

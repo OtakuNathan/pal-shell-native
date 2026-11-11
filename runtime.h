@@ -5,7 +5,7 @@
 #include <optional>
 #include <string>
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 using id_t = std::uint64_t;
 struct Event {
     id_t request = 0, session = 0, output = 0;

@@ -30,9 +30,9 @@ authorize a complete overwrite. An unresolved operation is queried, never replay
 | Optional plugin | `pal_plugin/pal_shell_native/plugin.py`, packaged `remote` manifest | Native execution replacement through `execution:extensions`, composed remote Hub ownership |
 | Hub and Slot | `pal-shell-native/pal_plugin/pal_shell_remote/hub.py`, `slot.py` | Target configuration, existing startup commands, strict SSH forwarding, fd leases, connection retirement |
 | Separate worker package | `pal-shell-native/python/pal_shell_worker` | Authentication, native Runtime, operation journal, retained output, completion snapshots, machine metadata, privileged operation grants |
-| Native extensions | `pal-shell-native/rpc_module.cpp`, `runtime.cpp` | Dynabridge RPC codec/dispatch, FF external async composition with libuv, native processes/PTY, optional output hard limit |
+| Native extensions | `pal-shell-native/rpc_module.cpp`, `runtime.cpp` | Portal RPC codec/dispatch, FF external async composition with libuv, native processes/PTY, optional output hard limit |
 
-No changes to Dynabridge or FF are required. Their pinned source dependencies are
+No changes to Portal or FF are required. Their pinned source dependencies are
 reused. The RPC `.def` projection is shell-specific: its typed binary payload is a
 bounded MessagePack shell request. Native callbacks enqueue worker-loop events;
 they never await network I/O. The local Hub uses Pal's existing sidecar IPC.
@@ -530,9 +530,9 @@ repository's `build/remote-validation/cloud/` directory.
 ## Protocol-v2 activation and transport acceptance
 
 Version 0.4.0 requires matching native API 2, remote palpkg and worker protocol 3. Older workers fail negotiation; update them separately.
-Hello/authentication retain Dynabridge framing for explicit version negotiation;
-authenticated messages wrap the unchanged Dynabridge payload in a 64-bit request ID.
-There is no fallback to a serial worker. Dynabridge and FF are unchanged.
+Hello/authentication retain Portal framing for explicit version negotiation;
+authenticated messages wrap the unchanged Portal payload in a 64-bit request ID.
+There is no fallback to a serial worker. Portal and FF are unchanged.
 
 Each Hub and worker owns one persistent native libuv RPC loop and the existing FF
 uv_executor. Socket acceptance, connected reads/writes, pending requests and timers

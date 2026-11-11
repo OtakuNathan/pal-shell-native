@@ -26,7 +26,7 @@ jobs:
       - run: python tests/test_sudo_setup.py
         env:
           PYTHONPATH: python
-      - name: Configure native Runtime and Dynabridge RPC extensions
+      - name: Configure native Runtime and Portal RPC extensions
         run: |
           $workerPython = python -c 'import sys; print(sys.executable)'
           if ($LASTEXITCODE) { throw 'Python discovery failed' }

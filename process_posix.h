@@ -7,7 +7,7 @@ using pid_t = int;
 #include <sys/types.h>
 #endif
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 struct Child {
     pid_t pid = -1;
     int output = -1, error = -1;

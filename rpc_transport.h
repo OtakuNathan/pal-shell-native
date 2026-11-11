@@ -1,7 +1,7 @@
 // Connection I/O is confined to one caller-owned libuv executor.
 // Python callbacks only enqueue immutable events on their asyncio owner.
 #pragma once
-#include "dynabridge/extensions/flux_foundry/uv_executor.h"
+#include <executor/uv_executor.h>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -34,7 +34,7 @@ void start_request(Channel*,uint64_t,Buffer,int);
 struct Loop {
     uv_loop_t loop{};
     std::thread thread;
-    dynabridge::flux_foundry_extensions::uv_executor* executor = nullptr;
+    flux_foundry::uv_executor* executor = nullptr;
     std::mutex admission;
     bool closing = false;
     std::atomic<size_t> queued{0};
@@ -44,7 +44,7 @@ struct Loop {
         thread=std::thread([this,&ready] {
             if (uv_loop_init(&loop)) { ready.set_exception(std::make_exception_ptr(std::runtime_error("RPC loop initialization failed"))); return; }
             try {
-                dynabridge::flux_foundry_extensions::uv_executor ex(&loop); executor=&ex;
+                flux_foundry::uv_executor ex(&loop, 1024); executor=&ex;
                 ready.set_value(); uv_run(&loop,UV_RUN_DEFAULT); executor=nullptr;
             } catch (...) { ready.set_exception(std::current_exception()); }
             if (uv_loop_close(&loop)) std::terminate();

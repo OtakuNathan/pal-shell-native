@@ -229,6 +229,37 @@ class BackendTests(unittest.TestCase):
         self.call('release_output', sessions[1]['output_id'])
         self.assertEqual(self.run_shell('true')['status'], 'exited')
 
+    def test_request_burst_drains_accepted_work_and_closes_live_processes(self):
+        # Exercise ordinary client bursts while process exits and shutdown also
+        # need the same bounded FF queue. Scheduling determines how many requests
+        # are refused; every admitted request must receive exactly one result.
+        for _ in range(8):
+            self.assertEqual(self.run_shell('sleep 30', wait=0)['status'], 'running')
+        accepted, refused = set(), set()
+        for _ in range(8192):
+            request = next(self.ids)
+            try:
+                self.runtime.read(request, 0, 0)
+                accepted.add(request)
+            except RuntimeError as error:
+                self.assertIn('queue capacity exceeded', str(error))
+                refused.add(request)
+        self.runtime.close()
+        seen = set()
+        while not self.events.empty():
+            event = self.events.get_nowait()
+            request = event['request_id']
+            if request == 0:
+                continue
+            self.assertIn(request, accepted)
+            self.assertNotIn(request, seen)
+            self.assertEqual(event['status'], 'rejected')
+            self.assertIn('invalid_session', event['error'])
+            seen.add(request)
+        self.assertEqual(seen, accepted)
+        self.assertTrue(seen.isdisjoint(refused))
+        self.assertEqual(len(accepted) + len(refused), 8192)
+
     def test_close_reaps_child(self):
         # PID is written only after exec, so the assertion cannot accidentally
         # inspect a shell that never started. No external process is touched.

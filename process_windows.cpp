@@ -10,7 +10,7 @@
 #include <vector>
 #include <stdexcept>
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 namespace {
 struct Process { HANDLE process, job; std::filesystem::path script; };
 std::mutex guard;

@@ -3,7 +3,7 @@
 Optional shell plugin for [Pal](https://github.com/OtakuNathan/Pal). Its `.palpkg`
 owns the `run_shell` schema and guidance, session controls, remote routing,
 observations, approvals and Bunshin integration. Its CPython wheel runs POSIX
-processes through Flux Foundry, dynabridge and statically linked libuv.
+processes through Flux Foundry, Portal and statically linked libuv.
 
 Install the wheel in Pal's interpreter and attach the matching plugin package.
 Attaching replaces Pal's built-in shell through the generic execution extension
@@ -141,10 +141,15 @@ runtime data. Never automatically retry an uncertain command on another backend.
 ## Build from source
 
 Requirements: regular CPython 3.11+, its development headers, a C++17 compiler,
-Git, and network access to download the checksum-pinned dependencies. pip's build
-isolation supplies scikit-build-core, CMake (>=3.24) and Ninja when needed. The
-build applies the pending dynabridge GIL fix in its own dependency tree. It does
-not require sibling FF/dynabridge checkouts or a system libuv installation.
+network access to download the checksum-pinned dependencies. pip's build
+isolation supplies scikit-build-core, CMake (>=3.24) and Ninja when needed. Portal
+includes the GIL lifetime fix upstream, so the build needs no local dependency
+patch, sibling FF/Portal checkout or system libuv installation.
+
+Runtime and RPC scheduling use FF's bounded libuv executor directly. Runtime
+admission allows up to 256 queued external requests and reserves executor
+capacity for process completion and shutdown. Excess requests raise before
+execution; admitted work still drains during close.
 
 ```bash
 python3 -m venv .venv
@@ -208,7 +213,7 @@ See [THIRD_PARTY.md](THIRD_PARTY.md) for dependency provenance and licenses.
 This distribution also provides `pal-shell-worker` and `_pal_shell_rpc`.
 The worker owns the existing Runtime independently of client connections; no tmux
 or second Pal core is required. Its private Unix endpoint uses enrolled client
-signatures, normally reached over strict public-key SSH forwarding. Dynabridge
+signatures, normally reached over strict public-key SSH forwarding. Portal
 provides the shell RPC projection and FF/libuv provides the async exchange.
 
 Run `pal-shell-worker --help`. `--generate-client-key PATH` creates a mode-0600
@@ -312,7 +317,7 @@ install matching binaries before activation. Approved launchers skip login scrip
 
 Install matching 0.6.1 wheel, worker and palpkg: protocol-v3 negotiation rejects an
 old worker before command submission. A 64-bit transport request ID wraps the
-unchanged Dynabridge payload. One caller-owned libuv RPC loop/executor per Hub or
+unchanged Portal payload. One caller-owned libuv RPC loop/executor per Hub or
 worker owns accepts, connected I/O and FF request awaits. Python business callbacks
 and the native process Runtime keep their existing owner loops. Slot locking is
 limited to connection lifecycle; slow replies do not block unrelated requests.

@@ -1,7 +1,7 @@
 #include "session_lifecycle.h"
 #undef NDEBUG
 #include <cassert>
-using dynabridge::pal_shell::SessionLifecycle;
+using portal::pal_shell::SessionLifecycle;
 template<class F> void rejected(F action) { bool rejected = false; try { action(); } catch (...) { rejected = true; } assert(rejected); }
 int main() {
     SessionLifecycle s;

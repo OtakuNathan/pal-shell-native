@@ -21,7 +21,7 @@
 #include <pty.h>
 #endif
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 namespace {
 struct Fds {
     std::array<int, 10> values{{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1}};

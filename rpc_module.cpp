@@ -1,10 +1,10 @@
 // Shell wire projection. Python payloads remain opaque bytes; framing, typed
-// dispatch and codec errors belong to Dynabridge, I/O completion to FF/libuv.
-#define DYNABRIDGE_IMPORT_DEF "rpc.def"
-#define DYNABRIDGE_EXPORT_DEF "rpc.def"
-#include "dynabridge/bridge.h"
-#include "dynabridge/backends/rpc.h"
-#include "dynabridge/backends/python_api.h"
+// dispatch and codec errors belong to Portal, I/O completion to FF/libuv.
+#define PORTAL_IMPORT_DEF "rpc.def"
+#define PORTAL_EXPORT_DEF "rpc.def"
+#include "portal/bridge.h"
+#include "portal/backends/rpc.h"
+#include "portal/backends/python_api.h"
 #include <flow/flow.h>
 #include <extension/external_async_awaitable.h>
 #include <uv.h>
@@ -23,7 +23,7 @@
 
 namespace {
 namespace ff = flux_foundry;
-using Bytes = dynabridge::rpc::bytes;
+using Bytes = portal::rpc::bytes;
 constexpr std::size_t max_frame = 1024 * 1024;
 constexpr auto symbol = "shell_request";
 #ifndef _WIN32
@@ -134,8 +134,8 @@ PyObject* failure(const std::exception& e) { PyErr_SetString(PyExc_RuntimeError,
 PyObject* pack(PyObject*, PyObject* arg) {
     if (!PyBytes_Check(arg)) { PyErr_SetString(PyExc_TypeError, "bytes required"); return nullptr; }
     try {
-        auto b = dynabridge::rpc::detail::encode_request_values(dynabridge::rpc::detail::symbol_id(symbol),
-            dynabridge::rpc::value::string(std::string(PyBytes_AS_STRING(arg), PyBytes_GET_SIZE(arg))));
+        auto b = portal::rpc::detail::encode_request_values(portal::rpc::detail::symbol_id(symbol),
+            portal::rpc::value::string(std::string(PyBytes_AS_STRING(arg), PyBytes_GET_SIZE(arg))));
         return PyBytes_FromStringAndSize(reinterpret_cast<const char*>(b.data()), b.size());
     } catch (const std::exception& e) { return failure(e); }
 }
@@ -143,9 +143,9 @@ PyObject* unpack(PyObject*, PyObject* arg) {
     if (!PyBytes_Check(arg)) { PyErr_SetString(PyExc_TypeError, "bytes required"); return nullptr; }
     try {
         const auto* begin = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(arg));
-        auto request = dynabridge::rpc::detail::decode_request(Bytes(begin, begin + PyBytes_GET_SIZE(arg)));
-        if (request.method != dynabridge::rpc::detail::symbol_id(symbol) || request.args.size() != 1
-            || request.args[0].kind() != dynabridge::rpc::value_kind::string) throw std::runtime_error("invalid shell RPC request");
+        auto request = portal::rpc::detail::decode_request(Bytes(begin, begin + PyBytes_GET_SIZE(arg)));
+        if (request.method != portal::rpc::detail::symbol_id(symbol) || request.args.size() != 1
+            || request.args[0].kind() != portal::rpc::value_kind::string) throw std::runtime_error("invalid shell RPC request");
         const auto& value = request.args[0];
         return PyBytes_FromStringAndSize(value.string_data(), value.string_size());
     } catch (const std::exception& e) { return failure(e); }
@@ -154,9 +154,9 @@ PyObject* respond(PyObject*, PyObject* args) {
     const char *frame, *payload; Py_ssize_t count, size;
     if (!PyArg_ParseTuple(args, "y#y#", &frame, &count, &payload, &size)) return nullptr;
     try {
-        dynabridge::rpc::router router;
-        dynabridge::rpc_backend::export_context_t ctx;
-        dynabridge::export_shell_request<std::string(std::string)>(ctx, router, [payload, size](std::string) { return std::string(payload, size); });
+        portal::rpc::router router;
+        portal::rpc_backend::export_context_t ctx;
+        portal::export_shell_request<std::string(std::string)>(ctx, router, [payload, size](std::string) { return std::string(payload, size); });
         auto* begin = reinterpret_cast<const unsigned char*>(frame);
         auto b = router.dispatch(Bytes(begin, begin + count));
         return PyBytes_FromStringAndSize(reinterpret_cast<const char*>(b.data()), b.size());
@@ -166,8 +166,8 @@ PyObject* response_payload(PyObject*, PyObject* arg) {
     if (!PyBytes_Check(arg)) { PyErr_SetString(PyExc_TypeError, "bytes required"); return nullptr; }
     try {
         auto* p = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(arg));
-        auto value = dynabridge::rpc::detail::decode_response(Bytes(p,p+PyBytes_GET_SIZE(arg)));
-        if (value.kind()!=dynabridge::rpc::value_kind::string) throw std::runtime_error("Invalid shell response");
+        auto value = portal::rpc::detail::decode_response(Bytes(p,p+PyBytes_GET_SIZE(arg)));
+        if (value.kind()!=portal::rpc::value_kind::string) throw std::runtime_error("Invalid shell response");
         return PyBytes_FromStringAndSize(value.string_data(),value.string_size());
     } catch(const std::exception& e) { return failure(e); }
 }
@@ -193,8 +193,8 @@ PyObject* exchange_frame(PyObject*, PyObject* args) {
                 auto s = std::move(in).value();
                 if (s->error) return Result(ff::error_tag, s->error);
                 Bytes response(s->read.begin() + 4, s->read.end());
-                auto value = dynabridge::rpc::detail::decode_response(response);
-                if (value.kind() != dynabridge::rpc::value_kind::string) throw std::runtime_error("invalid shell RPC response");
+                auto value = portal::rpc::detail::decode_response(response);
+                if (value.kind() != portal::rpc::value_kind::string) throw std::runtime_error("invalid shell RPC response");
                 return Result(ff::value_tag, Bytes(value.string_data(), value.string_data() + value.string_size()));
             }) | ff::end();
         auto blueprint = ff::make_lite_ptr<decltype(bp)>(std::move(bp));
@@ -228,6 +228,6 @@ PyMethodDef methods[] = {
 #endif
     {nullptr, nullptr, 0, nullptr}
 };
-PyModuleDef definition = {PyModuleDef_HEAD_INIT, "_pal_shell_rpc", "Dynabridge shell RPC and FF/libuv exchange", -1, methods};
+PyModuleDef definition = {PyModuleDef_HEAD_INIT, "_pal_shell_rpc", "Portal shell RPC and FF/libuv exchange", -1, methods};
 }
 PyMODINIT_FUNC PyInit__pal_shell_rpc() { return PyModule_Create(&definition); }

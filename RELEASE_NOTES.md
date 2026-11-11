@@ -162,7 +162,7 @@ Coordinate active sessions and retained output before replacing loaded code or
 restarting a worker. Publishing/installing files is not runtime activation.
 
 Native API 2 and remote protocol 3 are unchanged; 0.4.0 workers remain compatible
-but do not gain remote cwd expansion until updated. No Pal core, FF, Dynabridge,
+but do not gain remote cwd expansion until updated. No Pal core, FF, Portal,
 native session state machine or privilege policy changes are required.
 The verified Pal integration baseline remains
 3a75d38ffed0c992f110520647dc857bc3985666.

@@ -3,7 +3,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 // Pure owner-thread transitions. The reactor supplies monotonic milliseconds.
 struct SessionLifecycle {
     using clock_t = std::uint64_t;

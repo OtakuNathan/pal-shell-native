@@ -7,8 +7,8 @@
 #include "output_files.h"
 #endif
 #include "process_posix.h"
-#include "dynabridge/extensions/flux_foundry/python_interpreter_executor.h"
-#include "dynabridge/extensions/flux_foundry/uv_executor.h"
+#include "portal/extensions/flux_foundry/python_interpreter_executor.h"
+#include <executor/uv_executor.h>
 #include <flow/flow.h>
 #include <algorithm>
 #include <atomic>
@@ -36,10 +36,10 @@
 #endif
 #endif
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 namespace ff = flux_foundry;
-using UvExecutor = dynabridge::flux_foundry_extensions::uv_executor;
-using GilExecutor = dynabridge::flux_foundry_extensions::python_interpreter_executor;
+using UvExecutor = flux_foundry::uv_executor;
+using GilExecutor = portal::flux_foundry_extensions::python_interpreter_executor;
 static std::atomic<id_t> next_id{1};
 
 struct Runtime::Impl {
@@ -130,6 +130,11 @@ struct Runtime::Impl {
     std::thread reactor;
     std::mutex ingress;
     bool closed = false, stopping = false;
+    // External requests cannot consume the slots needed by process completions,
+    // FF continuations (at most 32 live sessions), and shutdown.
+    static constexpr unsigned ingress_capacity = 256;
+    static constexpr unsigned executor_capacity = 1024;
+    std::atomic<unsigned> queued{0};
     std::atomic<int> notification_errors{0};
     std::function<void(const Event&)> notifier;
     std::map<id_t, std::shared_ptr<Session>> sessions;
@@ -145,7 +150,7 @@ struct Runtime::Impl {
             bool announced = false;
             try {
                 if (uv_loop_init(&loop)) throw std::runtime_error("uv_loop_init failed");
-                UvExecutor local(&loop);
+                UvExecutor local(&loop, executor_capacity);
                 executor = &local;
                 auto bp = ff::make_blueprint<std::shared_ptr<Session>>()
                     | ff::via(executor) | ff::await<ProcessAwaitable>(executor) | ff::end();
@@ -180,9 +185,17 @@ struct Runtime::Impl {
         std::lock_guard<std::mutex> lock(ingress);
         if (closed) throw std::runtime_error("shell runtime is closed");
         if (!notifier) throw std::runtime_error("bind a callback before submitting work");
-        executor->dispatch(ff::task_wrapper_sbo([this, request, work = std::move(work)]() noexcept {
+        if (queued.load(std::memory_order_relaxed) >= ingress_capacity)
+            throw std::runtime_error("shell request queue capacity exceeded");
+        ff::task_wrapper_sbo task([this, request, work = std::move(work)]() noexcept {
+            queued.fetch_sub(1, std::memory_order_relaxed);
             try { work(); } catch (const std::exception& e) { fail(request, e.what()); }
-        }));
+        });
+        queued.fetch_add(1, std::memory_order_relaxed);
+        if (!executor->try_dispatch(std::move(task))) {
+            queued.fetch_sub(1, std::memory_order_relaxed);
+            throw std::runtime_error("shell executor admission closed");
+        }
     }
     std::shared_ptr<Session> lookup(id_t id) {
         const auto found = sessions.find(id);

@@ -1,10 +1,10 @@
 #include "runtime.h"
-#define DYNABRIDGE_IMPORT_DEF "import.def"
-#define DYNABRIDGE_EXPORT_DEF "export.def"
-#include "dynabridge/bridge.h"
-#include "dynabridge/backends/python.h"
+#define PORTAL_IMPORT_DEF "import.def"
+#define PORTAL_EXPORT_DEF "export.def"
+#include "portal/bridge.h"
+#include "portal/backends/python.h"
 
-namespace dynabridge {
+namespace portal {
 template<> struct py_backend::converter<pal_shell::id_t> {
     static PyObject* to(context_t&, pal_shell::id_t value) {
         return PyLong_FromUnsignedLongLong(value);
@@ -86,18 +86,18 @@ PyMODINIT_FUNC PyInit__pal_shell_runtime() {
         // metadata for the process lifetime, like a static extension type; do
         // not DECREF its types from a C++ destructor after Py_Finalize.
         // Runtime instances and their worker resources remain explicitly owned.
-        static auto* registration = new dynabridge::py_backend::export_context_t;
+        static auto* registration = new portal::py_backend::export_context_t;
         auto& ctx = *registration;
-        dynabridge::py_backend::module_t module(result, dynabridge::py_backend::ref_policy::borrowed);
-        dynabridge::exports::Runtime::register_all(ctx, module);
+        portal::py_backend::module_t module(result, portal::py_backend::ref_policy::borrowed);
+        portal::exports::Runtime::register_all(ctx, module);
         using Signature = void(
-            dynabridge::object_param<dynabridge::export_classes::Runtime, dynabridge::export_t>,
-            dynabridge::callable_param<dynabridge::import_symbols::notify, dynabridge::import_t>);
-        dynabridge::export_connect<Signature>(ctx, module, [](dynabridge::pal_shell::Runtime& runtime, auto& callback) {
+            portal::object_param<portal::export_classes::Runtime, portal::export_t>,
+            portal::callable_param<portal::import_symbols::notify, portal::import_t>);
+        portal::export_connect<Signature>(ctx, module, [](portal::pal_shell::Runtime& runtime, auto& callback) {
             using Context = std::decay_t<decltype(callback)>;
             auto context = std::make_shared<Context>(std::move(callback));
-            runtime.bind([context](const dynabridge::pal_shell::Event& event) {
-                dynabridge::call_notify(*context, event);
+            runtime.bind([context](const portal::pal_shell::Event& event) {
+                portal::call_notify(*context, event);
             });
         });
         return result;

@@ -14,7 +14,7 @@
 #include <unistd.h>
 #endif
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 // A finite input, independent of pipe capacity. The child inherits its own
 // descriptor; closing the parent's copy never truncates unread input.
 class InputFile {

@@ -10,7 +10,7 @@
 #include <string>
 #include <stdexcept>
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 class OutputFiles {
     std::filesystem::path directory_;
 public:

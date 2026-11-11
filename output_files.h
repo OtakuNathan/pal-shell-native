@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <vector>
 
-namespace dynabridge::pal_shell {
+namespace portal::pal_shell {
 // The manager owns these files until explicit result handoff/release or shutdown.
 class OutputFiles {
     std::string directory_;
