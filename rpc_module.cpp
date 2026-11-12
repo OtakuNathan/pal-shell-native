@@ -2,7 +2,7 @@
 // dispatch and codec errors belong to Portal, I/O completion to FF/libuv.
 #define PORTAL_IMPORT_DEF "rpc.def"
 #define PORTAL_EXPORT_DEF "rpc.def"
-#include "portal/bridge.h"
+#include "portal/portal.h"
 #include "portal/backends/rpc.h"
 #include "portal/backends/python_api.h"
 #include <flow/flow.h>

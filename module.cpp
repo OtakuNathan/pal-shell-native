@@ -1,7 +1,7 @@
 #include "runtime.h"
 #define PORTAL_IMPORT_DEF "import.def"
 #define PORTAL_EXPORT_DEF "export.def"
-#include "portal/bridge.h"
+#include "portal/portal.h"
 #include "portal/backends/python.h"
 
 namespace portal {
