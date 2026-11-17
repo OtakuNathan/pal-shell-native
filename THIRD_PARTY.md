@@ -6,8 +6,8 @@ Their LICENSE files are installed alongside the wheel in `pal_shell_native_licen
 
 | Dependency | Source revision | License |
 | --- | --- | --- |
-| [Flux Foundry](https://github.com/OtakuNathan/flux_foundry) | `0e6e31dfe68bbabea63e3eb1edf7031972ff2b23` | MIT |
-| [Portal](https://github.com/OtakuNathan/portal) | `7a6f53bbc30d3b4159e36de138486bffe90f3e62` | Apache-2.0 |
+| [Flux Foundry](https://github.com/OtakuNathan/flux_foundry) | `a93d246981a49648949c489a1918f5ccb61ed15d` | MIT |
+| [Portal](https://github.com/OtakuNathan/portal) | `d0510e49d587228cb760dbdef2ea60c20753400e` | Apache-2.0 |
 | [libuv](https://github.com/libuv/libuv) | `v1.50.0` | See bundled libuv LICENSE (MIT and component notices) |
 | [Pal file engine](https://github.com/OtakuNathan/Pal) | Exact revision and source hashes in `pal_shell_worker/_file_core/SOURCE.json` | MIT; bundled `_file_core/LICENSE` |
 

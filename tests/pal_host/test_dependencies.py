@@ -73,7 +73,7 @@ class NoRPC(MetaPathFinder):
         if fullname.split('.')[0] in {'pal_shell_worker', '_pal_shell_rpc'}:
             raise AssertionError(fullname)
 sys.meta_path.insert(0, NoRPC())
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal_shell_native.runtime import NativeExecutionRuntime
 from pal_shell_native.capabilities import build_provider, NativeExecutionProvider
 from pal_shell_contracts import Target

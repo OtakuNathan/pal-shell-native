@@ -71,12 +71,12 @@ to verify the pairing. Both repositories must be updated together.
 
 ## Compatibility
 
-- Backend 0.6.1 exports `_pal_shell_runtime`, `API_VERSION = 2`.
+- Backend 0.7.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Pal must support file delivery protocol v1, request visibility and history
   retirement. The exported engine's `SOURCE.json` records the exact source hashes.
   Compatible versions must preserve the existing host contracts, including
   `pal.shared.diagnostics`, `pal.bunshin.verification_builder`, and
-  `ToolGuidance.search_enum_fields` and `PalCore.start_background_turn`.
+  `ToolGuidance.search_enum_fields`, explicit background-turn owners and asynchronous `ControlActionSpec` handlers. This release targets Pal 6ab2ffe or newer.
 - Release wheels target regular CPython 3.11–3.13 on Linux glibc 2.28+ (x86_64,
   aarch64) and macOS arm64. Linux aarch64 includes 64-bit Raspberry Pi OS with a
   matching Python/glibc. Use pip to check tags; never rename an incompatible wheel.
@@ -97,7 +97,7 @@ happens to be on PATH. In a Pal virtual environment, installation is:
 
 ```bash
 PAL_PYTHON=/absolute/path/to/pal-venv/bin/python
-"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.6.1-MATCHING_TAGS.whl
+"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.7.0-MATCHING_TAGS.whl
 "$PAL_PYTHON" -c 'import _pal_shell_runtime as n; print(n.__file__, n.API_VERSION)'
 "$PAL_PYTHON" /absolute/path/to/test_backend.py
 ```
@@ -110,11 +110,11 @@ add it to Pal's launch environment, preserving its existing import paths.
 Check `n.__file__` to detect any older `.so` shadowing the new installation.
 Do not overwrite or unload a binary already mapped by a running process.
 
-Install `plugin-remote-0.6.1.palpkg` using Pal's package installation flow. For
+Install `plugin-remote-0.7.0.palpkg` using Pal's package installation flow. For
 offline preparation:
 
 ```sh
-pal package install /absolute/path/to/plugin-remote-0.6.1.palpkg --runtime-root <runtime-root>
+pal package install /absolute/path/to/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>
 ```
 
 The package retains the `remote` plugin ID for upgrades from 0.4.0. Its entrypoint
@@ -296,10 +296,11 @@ same authenticated Approve once / Reject interaction. Commands must use
 approval does not supply an OS password or override sudoers. If OS authorization
 is unavailable, the command reports the sudo failure without a password prompt.
 
-Approval cards separate the exact command/script into a shell code block and
+Approval details separate the exact command/script into a shell code block and
 standard input into its own code block. The target, runtime and directory remain
-outside the blocks. Telegram needs the matching Pal Telegram provider to render
-the blocks, including the card update after a decision. This presentation change
+outside the blocks. The matching Pal Telegram provider displays details separately
+from a short decision card, sending long text as a file. A decision updates only
+the short card. This presentation change
 needs only the updated `remote` plugin and Telegram provider activated at an idle
 boundary; it requires no worker update, native binary replacement or core restart.
 
@@ -336,7 +337,7 @@ active sessions and retained outputs; building/installing files does not reload 
 
 `pal_plugin/` owns the Native execution implementation, tools, session lifecycle
 adapter, Bunshin driver, remote Hub, target Slots, setup skill and manifest.
-It ships as `plugin-remote-0.6.1.palpkg` alongside the native wheels and independent
+It ships as `plugin-remote-0.7.0.palpkg` alongside the native wheels and independent
 worker bundles. The worker needs no Pal installation; the client plugin runs in
 Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
 
@@ -347,7 +348,7 @@ pal package build pal_plugin --output dist
 ```
 
 Install the matching native wheel into Pal's interpreter first, then use
-`pal package install dist/plugin-remote-0.6.1.palpkg --runtime-root <runtime-root>`
+`pal package install dist/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>`
 for offline preparation, or the running host's authorized package installation
 flow. Verification checks the native Runtime, RPC client and resident Pal contract;
 it does not install dependencies or restart services. The plugin uses the existing

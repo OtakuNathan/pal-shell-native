@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.core.main_context import MainContext
 from pal.core.turns import TurnContinuation
 from pal.execution import register_with_core
@@ -19,7 +19,7 @@ from pal.foundation.persistence import PalV2Database
 from pal.packages.archive import build
 from pal.packages.jobs import PackageJobs
 from pal.packages.service import PackageService
-from pal.plugins import PluginHost
+from pal.plugins.host import PluginHost
 from pal.plugins.models import PluginBundleModel
 from pal.shared.tool_protocol import new_tool_call
 
@@ -41,6 +41,8 @@ class PackageLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.database = PalV2Database(self.root / 'plugins.sqlite3')
         self.database.initialize([PluginBundleModel])
         self.core = PalCore(context=MainContext(execution_runtime=ExecutionRuntime(runtime_root=self.root)))
+        from pal.control.runtime_contracts import CORE_CONTROL
+        self.core.context.port_registry.register(CORE_CONTROL, self.core.control_runtime)
         self.core.context.port_registry['core:core'] = self.core
         register_with_core(self.core.context)
         self.core.publish_module_capabilities('execution')

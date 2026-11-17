@@ -9,7 +9,7 @@ on:
       pal_ref:
         description: 'Published Pal revision matching the exported file engine (source hashes are checked)'
         required: false
-        default: 'a88bf83547abd1bb23a792a26fe6924ae8cae79f'
+        default: 'ea768d4ad269e0d673020786447ded758f2d4033'
 permissions:
   contents: read
 jobs:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pypa/cibuildwheel@v3.4.1
         env:
-          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
@@ -71,11 +71,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ${{ inputs.pal_ref || '68b4f963032cd244171f8cad3974f5c1aa8daca9' }}
+          ref: ${{ inputs.pal_ref || 'ea768d4ad269e0d673020786447ded758f2d4033' }}
           path: .pal
       - run: python -m pip install . './.pal[test]'
         env:
-          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
       - name: Verify exported Pal file engine source hashes
         run: python .pal/scripts/export_file_core.py python/pal_shell_worker/_file_core --check
       - name: Resident and Bunshin integration against installed extension
@@ -108,7 +108,7 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install . pyinstaller
         env:
-          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
       - run: python tests/test_remote.py
       - run: python tests/test_file_worker.py
       - run: python tests/test_worker_environment.py
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OtakuNathan/Pal
-          ref: ${{ inputs.pal_ref || '68b4f963032cd244171f8cad3974f5c1aa8daca9' }}
+          ref: ${{ inputs.pal_ref || 'ea768d4ad269e0d673020786447ded758f2d4033' }}
           path: .pal
       - run: python -m pip install ./.pal
       - run: pal package build pal_plugin --output dist
@@ -170,7 +170,7 @@ jobs:
           python -m pip install ./source-check/pal_shell_native-*
           python tests/test_backend.py
         env:
-          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
       - uses: actions/upload-artifact@v4
         with:
           name: source

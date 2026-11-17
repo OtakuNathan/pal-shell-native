@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pal_shell_native VERSION 0.6.1 LANGUAGES C CXX)
+project(pal_shell_native VERSION 0.7.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -16,12 +16,12 @@ include(FetchContent)
 # Archive checksums lock the dependency contents as well as their revisions.
 # SOURCE_SUBDIR keeps header-only dependencies' own projects out of this build.
 FetchContent_Declare(ff
-  URL https://codeload.github.com/OtakuNathan/flux_foundry/tar.gz/0e6e31dfe68bbabea63e3eb1edf7031972ff2b23
-  URL_HASH SHA256=3b5e5fa562b1e249d342a2bb7797cdbf2bf9dc08556299946aa59a21093bbd88
+  URL https://codeload.github.com/OtakuNathan/flux_foundry/tar.gz/a93d246981a49648949c489a1918f5ccb61ed15d
+  URL_HASH SHA256=466a2c15297000a1a23d01158ac248a15c79f4b5f2dbd4b4b94b954138d24dfc
   SOURCE_SUBDIR _headers_only)
 FetchContent_Declare(portal
-  URL https://codeload.github.com/OtakuNathan/portal/tar.gz/7a6f53bbc30d3b4159e36de138486bffe90f3e62
-  URL_HASH SHA256=8aa917b15655c85abadbb4bcd62aee6b894dd2c8a8d82b61671ab1c8b75a0765
+  URL https://codeload.github.com/OtakuNathan/portal/tar.gz/d0510e49d587228cb760dbdef2ea60c20753400e
+  URL_HASH SHA256=852e2eafb86766b0b7dd987141442baa4d09ce6743a3595d5f0d6a9db0ada62d
   SOURCE_SUBDIR _headers_only)
 set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LIBUV_BUILD_BENCH OFF CACHE BOOL "" FORCE)

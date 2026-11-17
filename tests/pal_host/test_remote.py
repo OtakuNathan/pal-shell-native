@@ -17,7 +17,7 @@ except ModuleNotFoundError as exc:
     raise unittest.SkipTest("Remote integration requires the matching pal-shell-native worker build") from exc
 from pal_shell_worker.protocol import RemoteError
 from pal_shell_native.remote_contract import RemoteFailure
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal_shell_native.runtime import NativeExecutionRuntime
 from pal.core.main_context import MainContext
 from pal.execution import register_with_core
@@ -666,7 +666,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         import sys
         from pal.packages.archive import build
         from pal.packages.service import PackageService
-        from pal.plugins import PluginHost
+        from pal.plugins.host import PluginHost
         from pal.plugins.models import PluginBundleModel
         from pal.foundation.persistence import PalV2Database
         from pal.shared import RuntimeStatus
@@ -681,6 +681,8 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.core.close()
         from pal.execution.runtime import ExecutionRuntime
         self.core = PalCore(context=MainContext(execution_runtime=ExecutionRuntime(runtime_root=self.path)))
+        from pal.control.runtime_contracts import CORE_CONTROL
+        self.core.context.port_registry.register(CORE_CONTROL, self.core.control_runtime)
         register_with_core(self.core.context)
         self.core.publish_module_capabilities('execution')
         self.runtime = self.core.context.execution_runtime
@@ -1105,8 +1107,6 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             plugin.close()
 
             self.assertEqual(process.returncode, 0)
-            self.core.context.module_registry.unregister('remote')
-            self.core.context.port_registry.pop('remote:remote', None)
             self.assertTrue(self.worker.outputs)
             self.assertIn(sid, self.owner.shell.tickets)
             plugin.start()

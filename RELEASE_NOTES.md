@@ -1,15 +1,15 @@
-Unreleased: clearer privilege approval cards.
+# 0.7.0 — current Pal host interfaces
 
-- Display the exact command/script in a fenced shell code block and optional
-  standard input in a separate code block. Embedded backticks remain literal.
-- The paired Pal Telegram provider renders the blocks when opening and resolving
-  approval cards. Approve once / Reject and authenticated decision ownership
-  retain their existing behavior.
-- Activate the updated remote plugin and Telegram provider at an idle lifecycle
-  boundary. This display change needs no core restart, native binary replacement
-  or worker upgrade.
-- CI pins Pal `a88bf83547abd1bb23a792a26fe6924ae8cae79f` so the integration tests
-  exercise the matching Telegram provider as well as the host file contracts.
+- Register asynchronous control actions with `ControlActionSpec`; deliver decision replies through `CORE_CONTROL`.
+- Use tool-declared lifecycle access for native admission and retain the module owner for background completion turns.
+- Migrate removed host facade imports and update Android Companion separately to 0.4.0.
+- Rebuild against Flux Foundry a93d246 and Portal d0510e4. Local build provenance records any working-tree dependency changes.
+- Native API 2, RPC protocol 3 and file protocol 1 remain unchanged. Existing compatible remote workers do not require redeployment for this host upgrade.
+
+The host upgrade includes current approval presentation and tests against the
+current Pal interfaces. Release wheels and worker bundles are rebuilt from the
+checksum-pinned dependency commits; local working-tree build artifacts are not
+published. Existing compatible remote workers can remain deployed.
 
 0.6.1 fixes file submissions refused before execution.
 

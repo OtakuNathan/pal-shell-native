@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.core.main_context import MainContext
 from pal.core.turns import TurnContinuation, LLMPreflightEffect, LLMRequestEffect, MailboxReplyEffect, EffectResult
 from pal.execution import register_with_core

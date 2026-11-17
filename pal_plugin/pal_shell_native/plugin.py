@@ -12,13 +12,6 @@ class NativeExtension:
         self.remote = None
 
     def build_runtime(self, previous):
-        from pal.core import PalCore
-        from pal.execution.runtime import ExecutionRuntime
-        from pal.memory.service import MemoryService
-        if not callable(getattr(MemoryService, 'l1_context_view', None)) or not callable(getattr(ExecutionRuntime, 'prepare_model_context', None)):
-            raise RuntimeError('Update Pal to the matching observation delivery contract before attaching Native')
-        if self.resident and not callable(getattr(PalCore, 'start_background_turn', None)):
-            raise RuntimeError('Update Pal to support background turn admission before attaching Native')
         runtime = NativeExecutionRuntime(runtime_root=previous.runtime_root,
                                       sync_executor=previous.sync_executor,
                                       logical_state=previous.logical_state,
@@ -45,10 +38,18 @@ class NativeExtension:
             if core is not None:
                 from .events import ShellCompletionSource, EVENT, WAIT_EVENT
                 owner.core = core
-                owner.events = ShellCompletionSource(core, runtime)
+                owner.events = ShellCompletionSource(core, runtime, handle)
                 handle.event_sources.append(owner.events)
                 handle.event_handlers.update({EVENT: [owner.events], WAIT_EVENT: [owner.events]})
-            handle.control_action_handlers['shell_privilege_decision'] = owner.approvals.decide
+            from pal.core.control_action_registry import ControlActionSpec
+            from pal.control.runtime_contracts import CORE_CONTROL
+            controls = context.port_registry.observe(CORE_CONTROL)
+
+            async def decide(action):
+                result = owner.approvals.decide(action)
+                await controls.current.reply(action, result['message'])
+
+            handle.control_action_handlers['shell_privilege_decision'] = ControlActionSpec(decide)
 
     def check_detach(self, runtime):
         runtime.shell_owner.check_idle()
@@ -62,7 +63,7 @@ class NativeExtension:
 
 class NativePlugin:
     plugin_id = 'remote'  # Retain the installed package identity across the 0.4 upgrade.
-    version = '0.6.1'
+    version = '0.7.0'
 
     def __init__(self, runtime_root):
         self.runtime_root = runtime_root

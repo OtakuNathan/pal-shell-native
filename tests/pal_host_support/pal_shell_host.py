@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 import json
 
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.core.main_context import MainContext
 from pal.core.module_registry import ModuleHandle, MODULE_TIER_CORE_FOUNDATION
 from pal.execution import register_with_core
@@ -188,7 +188,7 @@ class PrototypeHost:
         ))
         self.core.publish_module_capabilities("shell_proto")
         self.core.context.event_source_registry.attach("shell_proto", self)
-        self.core.context.event_handler_registry.register(EVENT, self, module_id="shell_proto")
+        self.core.context.event_handler_registry.register(EVENT, self, module_id="shell_proto", owner=self.core.context.module_registry.get("shell_proto"))
         self.on_completion = on_completion
         self.pending: deque[Completion] = deque()
         self.in_flight: set[int] = set()
@@ -285,7 +285,7 @@ class PrototypeHost:
 
     async def close(self):
         await self.shell.close()
-        self.core.context.event_source_registry.detach_module("shell_proto")
+        self.core.context.event_source_registry.detach_module("shell_proto", expected_sources=(self,))
         self.pending.clear()
         self.core.context.execution_runtime.pending_outputs.clear()
         self.core.context.execution_runtime.shutdown()

@@ -39,7 +39,7 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
         core=SimpleNamespace(state=SimpleNamespace(active_turns={'turn':SimpleNamespace(delivery_binding=binding)}))
         approvals=ShellApprovals(SimpleNamespace(core=core))
         sent=asyncio.Event();cards=[]
-        bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=12)),
+        bot=SimpleNamespace(send_message=AsyncMock(side_effect=[SimpleNamespace(message_id=11), SimpleNamespace(message_id=12)]),
                             edit_message_text=AsyncMock())
         self.endpoint.application=SimpleNamespace(bot=bot)
         async def deliver(delivery,**kwargs):
@@ -57,11 +57,17 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
              'expires_at':datetime.now(timezone.utc).timestamp()+30}))
         try:
             await asyncio.wait_for(sent.wait(),2)
-            self.assertEqual(bot.send_message.call_args.kwargs['parse_mode'], 'MarkdownV2')
-            self.assertIn('```sh\napt update\n```', bot.send_message.call_args.kwargs['text'])
+            details = bot.send_message.call_args_list[0].kwargs
+            self.assertEqual(details['parse_mode'], 'MarkdownV2')
+            self.assertIn('```sh\napt update\n```', details['text'])
+            # Telegram owns inline versus separate details/card presentation.
+            # The host approval contract supports both provider generations.
+            if bot.send_message.call_count > 1:
+                self.assertNotIn('reply_markup', details)
+                self.assertEqual(bot.send_message.call_args.kwargs['reply_to_message_id'], 11)
             button=bot.send_message.call_args.kwargs['reply_markup'].inline_keyboard[0][0]
             callback=SimpleNamespace(data=button.callback_data,from_user=SimpleNamespace(id=42),
-                message=SimpleNamespace(chat=SimpleNamespace(id=100)),answer=AsyncMock())
+                message=SimpleNamespace(chat=SimpleNamespace(id=100),message_id=10 + bot.send_message.call_count),answer=AsyncMock())
             result=await self.endpoint._interaction_result_from_update(SimpleNamespace(callback_query=callback))
             envelope=self.endpoint.emit_interaction_result(result,reply_target=reply)
             event=EventEnvelope(event_kind=EventKind.INTERACTION_RESULT,source_kind=SourceKind.CHANNEL,payload=envelope)
@@ -71,8 +77,7 @@ class TelegramApprovalTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task,2)
             self.assertIn('Approved once',cards[-1].text)
             self.assertFalse(cards[-1].buttons)
-            self.assertEqual(bot.edit_message_text.call_args.kwargs['parse_mode'], 'MarkdownV2')
-            self.assertIn('```sh\napt update\n```', bot.edit_message_text.call_args.kwargs['text'])
+            self.assertIn('Approved once', bot.edit_message_text.call_args.kwargs['text'])
             self.assertIsNone(bot.edit_message_text.call_args.kwargs['reply_markup'])
         finally:
             if not task.done():task.cancel()

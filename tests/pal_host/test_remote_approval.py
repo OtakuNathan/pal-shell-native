@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import unittest
 from unittest.mock import patch
 
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.control.contracts import ControlAction, ControlRoute
 from pal_shell_native.approval import ShellApprovals, PendingApproval
 from pal_shell_native.remote_contract import RemoteFailure

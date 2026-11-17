@@ -8,7 +8,7 @@ def verify(context):
         from pal_shell_worker import PROTOCOL_VERSION
         from pal_shell_worker.input import stdin_bytes
         from pal.execution.extensions import ExecutionSlot
-        from pal.core import PalCore  # Initialize the host import boundary before execution.
+        from pal.core.runtime import PalCore
         from pal.execution.runtime import ExecutionRuntime
         from pal.execution.session_state import FileDeliveryManifest
         from pal.execution.targets import ExecutionTarget

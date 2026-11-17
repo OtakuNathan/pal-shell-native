@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from jsonschema import Draft202012Validator
 
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.core.main_context import MainContext
 from pal.execution import register_with_core
 from pal.execution.contracts import ToolCallBudget

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from pal.core.main_context import MainContext
+from pal.execution.backend import build_execution_runtime
 
 import asyncio
 import os
@@ -16,8 +18,7 @@ from pal.bunshin.runner import BunshinRunner, build_slim_bunshin_runtime
 from pal.bunshin.runner_components.invocation import Invocation
 from pal.bunshin.scoped_execution import BunshinScopedExecutionRuntime
 from pal_shell_native.role_sessions import BunshinShellSessions
-from pal.core import PalCore
-from pal.core.main_context import MainContext
+from pal.core.runtime import PalCore
 from pal.core.turns import TurnContinuation
 from pal.execution import register_with_core
 from pal.execution.contracts import ToolCallBudget
@@ -32,33 +33,7 @@ from pal.shared.tool_protocol import new_tool_call, ToolResultIR
 from pal.llm.contracts import LLMPreflightAdvice
 
 
-class NonStreamingModel:
-    projection_port = None
-    last_endpoint_id = None
-    last_model_id = None
-    last_projection_receipt = None
-
-    def supports_streaming(self, request=None):
-        return False
-
-    def resolve_endpoint_facts(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
-        return {"supports_streaming": self.supports_streaming()}
-
-    def resolve_max_output_tokens(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
-        return None
-
-    def prompt_cache_eligible_anchor_request(self, *, logical_scope_id="pal:resident", endpoint_id=""):
-        return self.prompt_cache_confirmed_anchor_request(logical_scope_id=logical_scope_id, endpoint_id=endpoint_id)
-
-    def prompt_cache_confirmed_anchor_request(self, *, logical_scope_id="pal:resident", endpoint_id=""):
-        return {}
-
-    def preflight(self, request):
-        return LLMPreflightAdvice(status="ready")
-
-    async def apreflight(self, request):
-        return self.preflight(request)
-
+from llm_fixture import NonStreamingLLM as NonStreamingModel
 
 
 async def noop(*args, **kwargs):
@@ -279,7 +254,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
         async def control(timeout=None):
             self.assertFalse(approving, "cancellation watcher must not compete with approval for Manager replies")
         class Model(NonStreamingModel):
-            async def agenerate(inner, request, **options):
+            async def respond(inner, request, **options):
                 requests.append(request)
                 if len(requests) == 1:
                     return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
@@ -313,7 +288,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manager_cancel_interrupts_foreground_shell_before_terminal(self):
         class Model(NonStreamingModel):
-            async def agenerate(inner, request, **options):
+            async def respond(inner, request, **options):
                 return generation_result_from_values(tool_calls=[new_tool_call(name="run_shell", args={
                     "cmd": "sleep 60"})], finish_reason="tool_calls")
         self.install_worker(self.root / "cancel-loop")
@@ -428,11 +403,13 @@ class NoRPC(MetaPathFinder):
         if fullname.split('.')[0] in {'pal_shell_worker', '_pal_shell_rpc'}:
             raise AssertionError('Local role imported remote dependency: ' + fullname)
 sys.meta_path.insert(0, NoRPC())
-from pal.core import PalCore
+from pal.core.runtime import PalCore
+from pal.core.main_context import MainContext
+from pal.execution.backend import build_execution_runtime
 from pal.execution import register_with_core
 from pal_shell_native.plugin import activate_role
 async def main():
-    core = PalCore()
+    core = PalCore(context=MainContext(execution_runtime=build_execution_runtime()))
     register_with_core(core.context)
     activate_role(core.context)
     runtime = core.context.execution_runtime

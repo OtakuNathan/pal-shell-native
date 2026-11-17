@@ -165,14 +165,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.6.1.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.7.0.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
 pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.6.1.palpkg --runtime-root <runtime-root>
+pal package install ../pal-shell-native/dist/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform
@@ -357,8 +357,9 @@ The in-repository socket provider supplies `trusted_actor` from its actual sessi
 Other channel providers must supply their authenticated sender identity in
 `InteractionResult.trusted_actor`; it must match the originating binding's
 user/account/session identity. Providers without this evidence cannot approve.
-The matching Pal Telegram provider renders approval code blocks both when opening
-the card and when closing it after a decision. Update and activate `remote` and
+The matching Pal Telegram provider renders approval details separately from its
+short decision card; long details are sent as a file. Closing an interaction
+updates only that short card. Update and activate `remote` and
 that provider together for this presentation; no worker upgrade, native binary
 replacement or core restart is needed for the display change alone.
 Bunshin scopes do not inherit the resident remote port or its identities.

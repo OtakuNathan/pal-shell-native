@@ -11,7 +11,7 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
 from pal.bunshin.scoped_execution import BunshinScopedExecutionRuntime
-from pal.core import PalCore
+from pal.core.runtime import PalCore
 from pal.core.main_context import MainContext
 from pal.execution import register_with_core
 from pal.shared.tool_protocol import new_tool_call

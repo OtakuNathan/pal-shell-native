@@ -1,8 +1,5 @@
-"""Explicit minimal LLM test implementation; individual tests supply outcomes."""
-from __future__ import annotations
-
+"""Explicit LLM capability fixture for host integration tests."""
 from pal.llm.contracts import LLMPreflightAdvice
-
 
 class NonStreamingLLM:
     projection_port = None
@@ -10,11 +7,43 @@ class NonStreamingLLM:
     last_model_id = None
     last_projection_receipt = None
 
+    def plan_compaction(self, endpoint_id=None, *, force_semantic=False):
+        from pal.llm.contracts import LLMCompactionPlan
+        return LLMCompactionPlan()
+
+    def release_context(self, context_id):
+        pass
+
+    def end_prompt_cache_turn(self, turn_id):
+        pass
+
+    def prompt_cache_reminder_snapshot(self):
+        return {}
+
+    def prompt_cache_warm_deadline_snapshot(self):
+        return {}
+
     def supports_streaming(self, request=None):
         return False
 
-    def resolve_endpoint_facts(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
+    def metadata(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
+        from pal.llm.contracts import LLMMetadata
+        return LLMMetadata(**self._endpoint_facts(preferred_endpoint_id=preferred_endpoint_id,
+            preferred_endpoint_source=preferred_endpoint_source))
+
+    def _endpoint_facts(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
         return {"supports_streaming": self.supports_streaming()}
+
+    def snapshot_turn_settings(self):
+        from pal.llm.contracts import LLMTurnSettings
+        return LLMTurnSettings()
+
+    def resolve_output_budget(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None, requested=None):
+        limit = self.resolve_max_output_tokens(preferred_endpoint_id=preferred_endpoint_id,
+            preferred_endpoint_source=preferred_endpoint_source)
+        if requested is not None:
+            return min(requested, limit) if limit is not None else requested
+        return limit if limit is not None else 4096
 
     def resolve_max_output_tokens(self, *, preferred_endpoint_id=None, preferred_endpoint_source=None):
         return None
@@ -25,18 +54,19 @@ class NonStreamingLLM:
     def prompt_cache_confirmed_anchor_request(self, *, logical_scope_id="pal:resident", endpoint_id=""):
         return {}
 
-    def preflight(self, request):
+    def _preflight_response(self, request):
         return LLMPreflightAdvice(status="ready")
 
-    async def apreflight(self, request):
-        return self.preflight(request)
+    async def preflight(self, request):
+        return self._preflight_response(request)
 
-    def generate(self, request, **options):
+    def _generate_response(self, request, **options):
         raise AssertionError("test must supply its generation result")
 
-    async def agenerate(self, request, **options):
-        return self.generate(request, **options)
+    async def respond(self, request, **options):
+        return self._generate_response(request, **options)
 
-    async def astream(self, request, **options):
-        raise AssertionError("non-streaming fixture cannot be streamed")
-        yield
+    async def generate(self, request, **options):
+        from pal.llm.ir import LLMResponseUpdate, LLMResponseDeltaKind
+        result = await self.respond(request, **options)
+        yield LLMResponseUpdate(result.response, delta_kind=LLMResponseDeltaKind.STATE, completion=result)

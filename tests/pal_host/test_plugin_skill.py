@@ -6,9 +6,10 @@ import tomllib
 from types import SimpleNamespace
 import unittest
 
-from pal.skill.models import SkillModel
-from pal.core import PalCore
 from pal.core.main_context import MainContext
+from pal.execution.backend import build_execution_runtime
+from pal.skill.models import SkillModel
+from pal.core.runtime import PalCore
 from pal.execution import register_with_core
 from pal.foundation import PalV2Database
 from pal.plugins.capabilities import register_with_core as register_plugins
@@ -69,14 +70,6 @@ class NativeSkillTests(unittest.TestCase):
         subprocess.run([sys.executable, '-c', script, str(hook)], check=True,
                        capture_output=True, text=True, timeout=30)
 
-    def test_plugin_rejects_host_without_observation_hooks(self):
-        from unittest.mock import patch
-        from pal.execution.runtime import ExecutionRuntime
-        from pal_shell_native.plugin import NativeExtension
-        with patch.object(ExecutionRuntime, 'prepare_model_context', None):
-            with self.assertRaisesRegex(RuntimeError, 'matching observation delivery'):
-                NativeExtension('/tmp').build_runtime(None)
-
     def test_package_verification_rejects_missing_host_dependencies(self):
         import runpy
         import sys
@@ -96,8 +89,6 @@ class NativeSkillTests(unittest.TestCase):
         verify = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'pal_plugin/hooks.py'))['verify']
         with patch.object(PalCore, 'start_background_turn', None):
             self.assertFalse(verify(None)['ok'])
-            with self.assertRaisesRegex(RuntimeError, 'background turn admission'):
-                NativeExtension('/tmp').build_runtime(None)
 
     def test_package_verification_rejects_host_without_enum_field_discovery(self):
         import runpy
@@ -118,14 +109,12 @@ class NativeSkillTests(unittest.TestCase):
         verify = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'pal_plugin' / 'hooks.py'))['verify']
         with patch.object(MemoryService, 'l1_context_view', None):
             self.assertFalse(verify(None)['ok'])
-            with self.assertRaisesRegex(RuntimeError, 'matching observation delivery'):
-                NativeExtension('/tmp').build_runtime(None)
 
     def test_setup_skill_is_published_and_withdrawn_with_plugin(self):
         with tempfile.TemporaryDirectory() as temporary:
             database = PalV2Database(Path(temporary) / 'skill.sqlite3')
             database.initialize([SkillModel])
-            core = PalCore()
+            core = PalCore(context=MainContext(execution_runtime=build_execution_runtime()))
             try:
                 service = SkillService()
                 register_with_core(core.context)

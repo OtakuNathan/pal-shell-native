@@ -44,8 +44,9 @@ def completion_program(event, *, core_mode, max_output_tokens, emit_reply):
 class ShellCompletionSource:
     source_id = "execution.shell.events"
 
-    def __init__(self, core, runtime):
+    def __init__(self, core, runtime, module_owner):
         self.core = core
+        self.module_owner = module_owner
         self.runtime = runtime
         self.owner = runtime.shell_owner
         self.pending = self.owner.observations.pending
@@ -123,7 +124,7 @@ class ShellCompletionSource:
             continuation = TurnContinuation(turn_id=opening.event_id, opening_event=opening,
                 delivery_binding=session["binding"], program=iter(()), correlation_id=f"shell:{sid}")
             task = self.core.start_background_turn(
-                continuation, lambda: self._run(sid, continuation), kind=ResidentTurnKind.BACKGROUND)
+                continuation, lambda: self._run(sid, continuation), owner=self.module_owner, kind=ResidentTurnKind.BACKGROUND)
             if task is None:
                 self.owner.observations.release_claim(sid, claim[1])
                 self.in_flight.discard(sid)
@@ -252,7 +253,7 @@ class ShellCompletionSource:
 def attach_completion_source(core, runtime):
     owner = runtime.shell_owner
     owner.core = core
-    owner.events = ShellCompletionSource(core, runtime)
+    owner.events = ShellCompletionSource(core, runtime, core.context.module_registry.get("execution"))
     core.context.event_source_registry.attach("execution", owner.events)
-    core.context.event_handler_registry.register(EVENT, owner.events, module_id="execution")
-    core.context.event_handler_registry.register(WAIT_EVENT, owner.events, module_id="execution")
+    core.context.event_handler_registry.register(EVENT, owner.events, module_id="execution", owner=core.context.module_registry.get("execution"))
+    core.context.event_handler_registry.register(WAIT_EVENT, owner.events, module_id="execution", owner=core.context.module_registry.get("execution"))

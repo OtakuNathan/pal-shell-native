@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from pal.core import PalCore  # Initialize the host before its execution extension.
+from pal.core.runtime import PalCore  # Initialize the host before its execution extension.
 from pal_shell_native.adapter import Completion
 from pal_shell_native.runtime import NativeShellOwner, PendingOutput
 from pal_shell_native.remote_contract import RemoteFailure
