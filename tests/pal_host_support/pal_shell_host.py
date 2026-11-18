@@ -135,12 +135,9 @@ class ShellProvider:
         raise RuntimeError("prototype requires asynchronous execution")
 
     async def run_async(self, call):
-        execution = call.meta["execution_runtime"]
         budget = call.meta.get("budget")
-        limit = execution._resolve_char_limit(budget) if budget is not None else None
         result = await self.runtime.run(**dict(call.args), turn_id=call.meta.get("turn_id") or "",
-                                        retain_output=True, load_output=False,
-                                        inline_limit=-1 if limit is None else min(limit, 2147483647))
+                                        retain_output=True, load_output=False)
         if result["session_id"]:
             self.runtime.completion_budgets[result["session_id"]] = budget
         return await self.deliver_output(call, result)
