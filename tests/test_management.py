@@ -151,7 +151,29 @@ class ManagementTests(unittest.TestCase):
     def test_fixed_exec_argv(self):
         self.assertEqual(helper.command({'action':'apt_install','packages':['cmake']}),
             ['/usr/bin/apt-get','--assume-yes','--no-remove','install','--','^cmake$'])
-        self.assertEqual(helper.command({'action':'shutdown','packages':[]}),['/usr/bin/systemctl','poweroff'])
+        argv = helper.command({'action':'shutdown','packages':[]}, operation_key='a' * 64)
+        self.assertEqual(argv[0], '/usr/bin/systemd-run')
+        self.assertIn('--on-active=2s', argv)
+        self.assertIn('--unit=pal-shell-shutdown-' + 'a' * 64, argv)
+        self.assertEqual(argv[-2:], ['/usr/bin/systemctl', 'poweroff'])
+        self.assertNotIn('--no-block', argv)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux shutdown helper')
+    def test_shutdown_receipt_is_saved_only_after_scheduler_acceptance(self):
+        args = {'action': 'shutdown', 'target': 1, 'protected_machine_id': 'other-client-host'}
+        args['management'] = normalize(args)
+        grant = {**self.envelope['approval'], 'fingerprint': digest(['privileged', args])}
+        envelope = {'args': args, 'approval': grant, 'signature': self.key.sign(canonical(grant)).hex()}
+        for code in (0, 1):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                config = {**self.config, 'allowed_actions': ['shutdown'], 'state_directory': directory}
+                with patch.object(helper, 'protected'), patch.object(helper, 'consume'), \
+                     patch.object(helper, 'run_child', return_value=code) as run:
+                    self.assertEqual(helper.execute(config, envelope), code)
+                    self.assertEqual(helper.execute(config, envelope), code)
+                    run.assert_called_once()
+                record = json.loads(next(Path(directory).glob('*.json')).read_text())
+                self.assertEqual('shutdown_schedule' in record, code == 0)
 
     @unittest.skipUnless(Path('/usr/bin/apt-get').exists(), 'APT acceptance')
     def test_apt_does_not_expand_package_patterns_or_suffix_operations(self):

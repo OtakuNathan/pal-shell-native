@@ -10,6 +10,7 @@ import time
 import tomllib
 
 from pal.foundation.sidecar import SidecarEndpoint, SidecarRpcClient, python_subprocess_env
+from pal_shell_contracts.package_layout import hub_dependency_root
 from .port import HubPort
 
 
@@ -38,8 +39,13 @@ class RemoteHubClient:
             env = python_subprocess_env()
             # palpkg places this module under runtime/plugins/community/remote,
             # outside site-packages. The sidecar must load this installed generation.
-            plugin_root = str(Path(__file__).resolve().parent.parent)
-            env['PYTHONPATH'] = os.pathsep.join([plugin_root, *filter(None, env.get('PYTHONPATH', '').split(os.pathsep))])
+            plugin_root = Path(__file__).resolve().parent.parent
+            dependency = hub_dependency_root(plugin_root)
+            prefix = [str(plugin_root)]
+            if dependency is not None:
+                prefix.insert(0, str(dependency))
+                env["PAL_SHELL_HUB_DEPENDENCIES"] = str(dependency)
+            env['PYTHONPATH'] = os.pathsep.join([*prefix, *filter(None, env.get('PYTHONPATH', '').split(os.pathsep))])
             self.process = subprocess.Popen([sys.executable, '-m', 'pal_shell_remote.hub', '--config', str(config),
                 '--directory', self.directory.name], env=env, start_new_session=True,
                 stdin=subprocess.DEVNULL)

@@ -32,6 +32,7 @@ class NativeShellOwner:
 
     def __init__(self):
         self._shell = None
+        self.local_engine = None
         self.core = None
         self.events = None
         self.pending = {}
@@ -69,7 +70,8 @@ class NativeShellOwner:
         observed_work = any(s.get("watching", True) or s.get("latest_status") not in TERMINAL
                             for s in self.sessions.values())
         return bool(observed_work or self.pending or self.files.has_work or (self._shell is not None
-                    and (self._shell._foreground or self._shell.execution_work)))
+                    and (self._shell._foreground or self._shell.execution_work))
+                    or (self.local_engine is not None and (self.local_engine.inflight or self.local_engine.awaiting_admission)))
 
     @asynccontextmanager
     async def tool_scope(self):
@@ -86,7 +88,7 @@ class NativeShellOwner:
             raise ShellRejected("shell runtime is closed")
         if self._shell is None:
             from .router import ShellRouter
-            self._shell = ShellRouter(owner=self, on_ready=self.notify)
+            self._shell = ShellRouter(owner=self, on_ready=self.notify, engine=self.local_engine)
         return self._shell
 
     def attach_remote(self, port):
@@ -299,6 +301,9 @@ class NativeShellOwner:
         if self._shell:
             self._shell.close_idle()
             self._shell = None
+        elif self.local_engine is not None:
+            self.local_engine.close()
+        self.local_engine = None
         self.closed = True
         self.observations.closed = True
         self.pending.clear()
@@ -322,6 +327,9 @@ class NativeShellOwner:
             await self.events.close()
         if self._shell is not None:
             await self._shell.close()
+        elif self.local_engine is not None:
+            await asyncio.to_thread(self.local_engine.close)
+        self.local_engine = None
         self._shell = None
         self.pending.clear()
         self.sessions.clear()
@@ -581,8 +589,10 @@ class NativeExecutionRuntime(ExecutionRuntime):
                 except Exception as recovery_exc:
                     recovery_error = "\nOutcome reconciliation also failed:\n" + exception_reason(recovery_exc)
                     LOGGER.warning("shell operation unresolved identity=%s", exc.operation_id)
-            hints = [ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {}},
-                                   reason="Check whether the execution target is available.")]
+            reason = ("Copy the exact name or unquoted integer ID for the intended target."
+                      if exc.code in {"invalid_target", "ambiguous_target"}
+                      else "Check whether the execution target is available.")
+            hints = [ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {}}, reason=reason)]
             receipt = EffectReceipt(outcome=EffectOutcome(exc.effect), receipt={"operation_id": exc.operation_id})
             message = exception_reason(exc) + recovery_error
             if exc.effect == "unknown":
@@ -649,12 +659,13 @@ class NativeExecutionRuntime(ExecutionRuntime):
         payload = dict(result.output) if isinstance(result.output, dict) else {}
         pending = self.shell_owner.pending.get(call.call_id)
         failure = result.output_error or payload.get("output_error") or (pending.failure if pending else "")
-        if not failure:
+        if not failure and native_action(record) != "run":
             return result
-        if pending:
+        if pending and failure:
             pending.failure = failure
         hints = session_affordances(
-            {**payload, "output_error": failure}, output_ref=call.call_id if pending else ""
+            {**payload, "output_error": failure}, output_ref=call.call_id if pending else "",
+            created=native_action(record) == "run",
         )
         # The shared finalizer may discover a save failure after normalization.
         # Actions are outside its body budget, but still require captured-view
@@ -758,4 +769,6 @@ class NativeExecutionRuntime(ExecutionRuntime):
         if self._owns_shell and self.shell_owner._shell is not None:
             raise RuntimeError("await shutdown_async() before closing a native execution runtime")
         if self._owns_shell:
+            if self.shell_owner.local_engine is not None:
+                self.shell_owner.close_idle()
             super().shutdown()

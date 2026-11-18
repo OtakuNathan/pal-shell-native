@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -14,6 +15,7 @@ import unittest
 import weakref
 
 import _pal_shell_runtime as native
+from pal_shell_contracts import RemoteFailure
 from pal_shell_prototype import ShellRejected, ShellRuntime, TERMINAL
 
 
@@ -54,17 +56,15 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(result["status"], TERMINAL, result)
         return result
 
-    async def test_stdin_adapter_and_old_extension_compatibility(self):
-        from unittest.mock import patch
+    async def test_typed_rpc_preserves_literal_stdin(self):
         text = '中文\n\x00$HOME $(false)'
         result = await self.runtime.run('cat', stdin=text)
         self.assertEqual(result['stdout_bytes'], text.encode())
+        self.assertEqual((await self.runtime.run('cat', stdin=''))['stdout_bytes'], b'')
         with self.assertRaisesRegex(ShellRejected, 'stdin_pty_conflict'):
             await self.runtime.run('cat', stdin='', tty=True)
-        with patch.object(native, 'STDIN_VERSION', 0):
-            self.assertEqual((await self.runtime.run('printf legacy'))['stdout'], 'legacy')
-            with self.assertRaisesRegex(ShellRejected, 'stdin_unsupported'):
-                await self.runtime.run('cat', stdin='')
+        with self.assertRaisesRegex(ShellRejected, 'exceeds 524288 bytes'):
+            await self.runtime.run('cat', stdin='x' * (512 * 1024 + 1))
 
     async def test_cancelled_stdin_run_reaps_and_retires_session(self):
         marker = self.root / 'started'
@@ -412,8 +412,21 @@ class NativeShellTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await asyncio.to_thread(runtime.close)
 
+    async def test_transport_eof_reports_unknown_and_reaps_the_foreground(self):
+        marker = self.root / "child"
+        task = asyncio.create_task(self.runtime.run(f"echo $$ > {shlex.quote(str(marker))}; exec sleep 60"))
+        await until(lambda: bool(marker.exists() and marker.stat().st_size))
+        child = int(marker.read_text())
+        self.runtime.engine.socket.shutdown(socket.SHUT_RDWR)
+        with self.assertRaises(RemoteFailure) as lost:
+            await asyncio.wait_for(task, 5)
+        self.assertEqual(lost.exception.code, "local_engine_lost")
+        self.assertEqual(lost.exception.effect, "unknown")
+        await asyncio.wait_for(self.runtime.close(), 5)
+        self.assertFalse(alive(child))
+
     async def test_close_cancels_foreground_and_removes_output_files(self):
-        output_root = Path(os.environ.get("TMPDIR") or "/tmp")
+        output_root = self.runtime.engine.output_dir
         before = set(output_root.glob("pal-native-shell-output-*"))
         task = asyncio.create_task(self.runtime.run("printf partial; sleep 60"))
         await until(lambda: bool(set(output_root.glob("pal-native-shell-output-*")) - before))

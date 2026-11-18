@@ -35,12 +35,11 @@ noninteractive PowerShell sessions, but no ConPTY, power or privilege management
 Windows SSH success alone does not establish that this matching worker is installed.
 Inspect actual support and use the Windows prototype instructions in docs/remote-shell.md.
 
-On Pal's side verify the native execution backend, matching pal-shell-native/RPC
-package, execution:extensions port, and remote plugin discovery.
-The remote plugin is a companion palpkg maintained in pal-shell-native/pal_plugin;
-it is not built into Pal. Install the matching native wheel in the host interpreter,
-then use `install_package` (or pal package install for offline preparation) with
-plugin-remote-0.7.0.palpkg. If the runtime still contains the retired managed
+On Pal's side verify the execution:extensions port and remote plugin discovery.
+Use `install_package` (or pal package install for offline preparation) with
+plugin-remote-0.9.0.palpkg. It contains the local engine and Hub RPC client.
+Check activation status and use an idle plugin reload if installation only
+prepared files. If the runtime still contains the retired managed
 plugins/_builtin/remote manifest, the first migration requires an offline CLI
 installation while Pal is stopped. The installer archives the old directory under
 packages/previous/builtin/remote and restores it on publication failure. Do not

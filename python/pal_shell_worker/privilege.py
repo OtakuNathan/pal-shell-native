@@ -157,6 +157,8 @@ async def handle_privileged(worker, method, args):
             worker.management_probe = installed
             if not installed.get('ok') or params['management']['action'] not in installed.get('allowed_actions', []):
                 raise RemoteError('management_unavailable', 'Signed management installation is not ready; run the remote setup instructions')
+            if action == 'shutdown' and installed.get('shutdown_schedule_version') != 1:
+                raise RemoteError('management_upgrade_required', 'Upgrade the protected management helper for scheduled shutdown receipts (requires systemd-run)')
         if params.get('stdin') is not None and await privileged_stdin_version(worker) != 1:
             raise RemoteError('stdin_unsupported', 'Update the worker and protected helper to support stdin')
         op, fresh = worker._record(args.get('operation_id'), 'privileged', params)
@@ -237,9 +239,12 @@ async def execute_management(worker, op):
             raise RemoteError('shutdown_not_started', 'Management launcher could not start') from exc
         code = await process.wait()
         if code:
-            worker.draining = False
+            # Scheduling may have succeeded before journal/receipt delivery
+            # failed. Keep admission closed until the outcome is reconciled.
             raise RemoteError('shutdown_unconfirmed', 'Management helper did not confirm shutdown; query the original operation', effect='unknown')
-        worker._finish(op, {'status':'accepted','operation_id':op.operation_id,'runtime_epoch':worker.epoch,'power_state':'unconfirmed'})
+        worker._finish(op, {'status':'accepted','operation_id':op.operation_id,'runtime_epoch':worker.epoch,
+                           'shutdown_initiated': True, 'power_state':'unconfirmed',
+                           'shutdown_schedule': {'scheduler': 'systemd', 'delay_ms': 2000}})
         return
     if op.args.get('stdin') is not None:
         command = 'exec ' + shlex.join(['/usr/bin/sudo', '-n', '--', worker.config.management_helper])

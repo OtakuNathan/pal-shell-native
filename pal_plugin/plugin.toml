@@ -1,6 +1,6 @@
 plugin_id = "remote"
 entrypoint = "pal_shell_native.plugin"
-version = "0.7.0"
+version = "0.9.0"
 enabled_by_default = true
 lifecycle_protocol = "raii.v1"
 module_id = "remote"
@@ -10,4 +10,3 @@ reload_modules = ["pal_shell_native", "pal_shell_remote", "pal_shell_contracts"]
 
 [execution]
 role_entrypoint = "pal_shell_native.plugin:activate_role"
-worker_modules = ["_pal_shell_runtime"]

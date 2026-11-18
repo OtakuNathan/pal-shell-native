@@ -23,9 +23,9 @@ class OutputFiles {
 public:
     int out = -1, err = -1;
     std::string stdout_path, stderr_path;
-    OutputFiles() {
+    explicit OutputFiles(const std::string& directory = {}) {
         const char* tmpdir = ::getenv("TMPDIR");
-        std::string base = (tmpdir && *tmpdir) ? std::string(tmpdir) : std::string("/tmp");
+        std::string base = !directory.empty() ? directory : (tmpdir && *tmpdir ? tmpdir : "/tmp");
         std::string pattern_str = base + "/pal-native-shell-output-XXXXXX";
         std::vector<char> pattern(pattern_str.begin(), pattern_str.end());
         pattern.push_back('\0');

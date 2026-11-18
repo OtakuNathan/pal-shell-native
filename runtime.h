@@ -18,13 +18,14 @@ struct Event {
     bool has_returncode = false, tty = false, truncated = false, inline_output = false;
 };
 
-// Python owns this object; all operating-system/session state belongs to its reactor.
-class Runtime {
+// The caller owns the engine; OS and session state belong to its reactor.
+class Engine {
 public:
-    explicit Runtime(unsigned completed_capacity);
-    ~Runtime();
-    Runtime(const Runtime&) = delete;
-    Runtime& operator=(const Runtime&) = delete;
+    explicit Engine(unsigned completed_capacity, id_t first_id = 0, id_t end_id = 0,
+                    std::string output_dir = {});
+    ~Engine();
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
     void bind(std::function<void(const Event&)> notifier);
     void run(id_t request, std::string shell, std::string command, std::string cwd,
              bool tty, int wait_ms, int timeout_ms, int inline_limit);

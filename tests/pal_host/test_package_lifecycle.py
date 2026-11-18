@@ -16,12 +16,12 @@ from pal.core.turns import TurnContinuation
 from pal.execution import register_with_core
 from pal.execution.runtime import ExecutionRuntime
 from pal.foundation.persistence import PalV2Database
-from pal.packages.archive import build
 from pal.packages.jobs import PackageJobs
 from pal.packages.service import PackageService
 from pal.plugins.host import PluginHost
 from pal.plugins.models import PluginBundleModel
 from pal.shared.tool_protocol import new_tool_call
+from pal_shell_test_package import build_test_package
 
 
 class PackageLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +31,7 @@ class PackageLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.saved_modules = {name: module for name, module in sys.modules.items()
                               if name.startswith(('pal_shell_native', 'pal_shell_remote', 'pal_shell_contracts'))}
         source = Path(__file__).resolve().parents[2] / 'pal_plugin'
-        self.artifact = build(source, self.root / 'dist')
+        self.artifact = build_test_package(source, self.root, hub_dependencies=False)
         # The dependency hook is covered separately. Keep publication fast so
         # the real package worker switches while the tool is still waiting.
         self.hooks = patch.object(PackageService, '_hook', return_value={'ok': True})
@@ -93,6 +93,7 @@ class PackageLifecycleTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(tool=name):
                 previous = self.host.generations['remote']
                 owner = self.runtime.shell_owner
+                previous_engine = owner.local_engine
                 counts = []
                 check_idle = owner.check_idle
 
@@ -112,6 +113,9 @@ class PackageLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('origin', self.core.state.active_turns)
                 self.assertTrue(owner.closed)
                 self.assertFalse(self.runtime.shell_owner.closed)
+                self.assertIsNotNone(previous_engine.process.poll())
+                self.assertNotEqual(self.runtime.shell_owner.local_engine.process.pid, previous_engine.process.pid)
+                self.assertIsNone(self.runtime.shell_owner.local_engine.process.poll())
 
         result = await self.tool('call_tool', {
             'name': 'uninstall_plugin', 'args': {'name': 'remote', 'wait_ms': 5000}})

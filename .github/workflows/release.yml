@@ -135,6 +135,7 @@ jobs:
           path: dist/pal-shell-worker-*.tar.gz
           if-no-files-found: error
   remote-plugin:
+    needs: wheels
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -148,7 +149,24 @@ jobs:
           ref: ${{ inputs.pal_ref || 'ea768d4ad269e0d673020786447ded758f2d4033' }}
           path: .pal
       - run: python -m pip install ./.pal
-      - run: pal package build pal_plugin --output dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: wheelhouse
+          merge-multiple: true
+      - run: python packaging/build_palpkg.py --complete --output dist wheelhouse/*.whl
+      - name: Verify the self-contained package in an empty runtime
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from pal.packages.service import PackageService
+
+          package, = Path("dist").glob("plugin-remote-*.palpkg")
+          with TemporaryDirectory(prefix="pal-release-check-") as directory:
+              result = PackageService(Path(directory)).install(package)
+          assert result["status"] == "ready", result
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: remote-plugin

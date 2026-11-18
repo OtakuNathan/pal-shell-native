@@ -25,6 +25,7 @@ class NativeRunInput(RunInput):
 class RemoteStartInput(StrictToolModel):
     target: ExecutionTarget
     action: str = Field(min_length=1, description="Exact start action advertised for this target by list_remote.")
+    wait_ready_ms: int = Field(default=0, ge=0, le=300000, description="After a successful startup action, wait up to this long for the authenticated worker and shell to become ready. Probes retry; the startup action does not.")
 
 
 class RemotePowerInput(StrictToolModel):
@@ -37,9 +38,20 @@ class TargetRunInput(RunInput):
 
 
 class ListRemoteInput(StrictToolModel):
+    model_config = ConfigDict(strict=True, extra="forbid", json_schema_extra={
+        "if": {"required": ["wait_ready_ms"], "properties": {"wait_ready_ms": {"minimum": 1}}},
+        "then": {"required": ["refresh"], "properties": {"refresh": {"const": True}}},
+    })
     refresh: bool = Field(default=False, description="Refresh selected targets without waking them.")
     target: ExecutionTarget | None = Field(default=None, description="Exact target ID, name or shortcut; omit to list all. 0 is local.")
     view: Literal["summary", "detail"] = Field(default="summary", description="Summary for target selection and readiness; detail for resources, limits and protocol diagnostics.")
+    wait_ready_ms: int = Field(default=0, ge=0, le=300000, description="Requires refresh=true. Retry transient readiness probes up to this deadline without starting the target.")
+
+    @model_validator(mode="after")
+    def validate_wait(self):
+        if self.wait_ready_ms and not self.refresh:
+            raise ValueError("wait_ready_ms requires refresh=true")
+        return self
 
 
 def _target_summary(item):
@@ -47,7 +59,8 @@ def _target_summary(item):
     summary = {key: item[key] for key in (
         "target", "name", "shortcut", "reachable", "probe_error", "needs_start",
         "requires_start", "registered", "execution", "start_actions", "expected_offline",
-        "os", "arch", "shell", "probed_at",
+        "os", "arch", "shell", "probed_at", "management", "readiness",
+        "wait_timed_out", "probe_attempts", "waited_ms", "probe_details",
     ) if key in item}
     if "static" in item:
         summary["usage"] = item["static"].get("usage", "")
@@ -163,7 +176,6 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
         execution = call.meta["execution_runtime"]
         owner = execution.shell_owner
         budget = call.meta.get("budget")
-        limit = execution._resolve_char_limit(budget) if budget is not None else None
         turn_id = str(call.meta.get("turn_id") or "")
         continuation = owner.core.state.active_turns.get(turn_id) if owner.core is not None else None
         lease_id = call.meta["tool_call"].call_id
@@ -172,8 +184,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
                             "committed": False, "cmd": call.args["cmd"], "tty": bool(call.args.get("tty")),
                             "transient": bool(call.meta.get("transient_execution"))}
         try:
-            result = await owner.shell.run(**dict(call.args), turn_id=turn_id, delivery_context=delivery_context, retain_output=True, load_output=False,
-                                           inline_limit=-1 if limit is None else min(limit, 2147483647))
+            result = await owner.shell.run(**dict(call.args), turn_id=turn_id, delivery_context=delivery_context, retain_output=True, load_output=False)
         except BaseException as exc:
             from .adapter import ShellRejected
             if (isinstance(exc, ShellRejected) or getattr(exc, "effect", "") == "not_started"
@@ -473,7 +484,7 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             search_terms=('host', 'hosts', 'worker', 'workers', 'machine', 'machines', 'connection', 'connectivity', 'readiness', 'available', 'configured'),
             search_objects=('target', 'targets'),
             purpose="List execution targets and their readiness; defaults to a compact summary.",
-            use_when="Find a target or inspect readiness. Reuse a known target ID to limit refresh. Choose view=detail only when resource, privilege or protocol details are needed. Unreachable entries remain valid targets. Inspect probe_error; connection or authentication failure does not prove a startup action is needed.",
+            use_when="Find a target or inspect readiness. Summary includes configured/last-known privilege and management facts with source/time; these do not establish current availability. Use refresh=true to verify, optionally with wait_ready_ms for a booting target. Limit refresh to a known target. Choose view=detail for resources/protocol diagnostics. Inspect probe_error; failure alone does not establish a need to wake the machine.",
             do_not_use_when="A returned session already fixes its target.",
             failure_next_steps="Unreachable entries remain valid targets. Inspect probe_error; connection or authentication failure does not prove a startup action is needed. For deeper diagnosis, repeat with the target ID and view=detail.",
         ),
@@ -493,9 +504,11 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             items = []
         if owner.remote_port is not None and target != 0:
             if owner._shell is not None:
-                items.extend(await owner.shell.list_targets(call.args.get("refresh", False), target=target))
+                items.extend(await owner.shell.list_targets(call.args.get("refresh", False), target=target,
+                                                           wait_ready_ms=call.args.get("wait_ready_ms", 0)))
             else:
-                items.extend(await owner.remote_port.list(call.args.get("refresh", False), target=target))
+                items.extend(await owner.remote_port.list(call.args.get("refresh", False), target=target,
+                                                         wait_ready_ms=call.args.get("wait_ready_ms", 0)))
         if target is not None and not items:
             raise ToolRejectedError("Target is not configured", error_code="invalid_target")
         view = call.args.get("view", "summary")
@@ -523,10 +536,10 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
             search_domain_description="Discover targets and manage startup/shutdown; execute commands and manage sessions in shell.",
             search_objects=("target", "targets"),
             search_terms=("wake", "waking", "boot", "startup"),
-            purpose="Explicitly invoke one preconfigured target startup action (wake or service start). Completion does not prove readiness; refresh target metadata to verify.",
+            purpose="Invoke one preconfigured target startup action (wake or service start). Optionally wait_ready_ms for the authenticated worker and shell; action completion alone does not prove readiness.",
             use_when="list_remote reports a configured wake or user-service start action that is needed.",
             do_not_use_when="A target is already available; this is not command replay or worker restart.",
-            failure_next_steps="Refresh target metadata to verify readiness; action completion alone does not prove readiness.",
+            failure_next_steps="Inspect the startup action's returncode separately from readiness. If not ready, use list_remote(refresh=true, wait_ready_ms=...) on this target; do not repeat the startup action just to probe.",
         ),
     )
     def remote_start(self, call):
@@ -535,12 +548,14 @@ class NativeExecutionProvider(ExecutionIntrospectionProvider):
     async def remote_start_async(self, call):
         owner = call.meta["execution_runtime"].shell_owner
         payload = dict(await owner.shell._port().call('start', dict(call.args)))
-        payload["readiness"] = "unverified"
         result = self._result(payload, status=RuntimeStatus.ERROR if payload.get("returncode", 0) != 0 else RuntimeStatus.OK)
         from pal.execution.tool_facade import ToolAffordance
         from dataclasses import replace
+        if payload.get("readiness") == "ready" or payload.get("returncode", 0) != 0:
+            return result
         return replace(result, affordances=[ToolAffordance(tool="call_tool", arguments={"name": "list_remote", "args": {
-            "target": call.args["target"], "refresh": True}}, reason="Verify target readiness after the startup action.")])
+            "target": call.args["target"], "refresh": True, "wait_ready_ms": 30000}},
+            reason="Wait for worker/shell readiness without repeating the startup action.")])
 
     @capability_action(
         namespace="operation", scope="module", family="exec", action_name="remote_power", aliases=("shutdown_remote_target",),

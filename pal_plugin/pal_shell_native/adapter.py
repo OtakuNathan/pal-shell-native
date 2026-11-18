@@ -9,14 +9,12 @@ import itertools
 import os
 from pathlib import Path
 import threading
-import weakref
-from uuid import uuid4
 
-import _pal_shell_runtime as native
+from pal_shell_contracts import RemoteFailure
+from .local_engine import LocalEngine
 
 TERMINAL = frozenset({"exited", "cancelled", "timed_out", "failed"})
 READ_EFFECTS = frozenset({"none", "local_read", "external_read"})
-RUN_OPERATIONS = frozenset({"run", "run_authorized", "run_with_stdin", "run_authorized_with_stdin"})
 
 
 class ShellRejected(RuntimeError):
@@ -31,15 +29,11 @@ class Completion:
 
 
 class ShellRuntime:
-    def __init__(self, *, completed_capacity: int = 32, on_ready=None):
+    def __init__(self, *, completed_capacity: int = 32, on_ready=None, engine=None):
         self.loop = asyncio.get_running_loop()
         self.loop_thread = threading.get_ident()
-        if native.API_VERSION != 2:
-            raise ShellRejected("native_incompatible: install matching pal-shell-native (API 2)")
-        if getattr(native, 'PRIVILEGE_GATE_VERSION', 0) != 1:
-            raise ShellRejected("native_incompatible: install matching native extension with privilege admission")
-        self.native = native.Runtime(completed_capacity)
-        self.epoch = uuid4().hex
+        self.engine = engine or LocalEngine(capacity=completed_capacity)
+        self.epoch = self.engine.epoch
         self._sequence = itertools.count(1)
         self._pending: dict[int, tuple[asyncio.Future, str, str]] = {}
         self._owners: dict[int, str] = {}
@@ -52,19 +46,15 @@ class ShellRuntime:
         self._closing: asyncio.Task | None = None
         self._on_ready = on_ready
         self.delivery_threads: set[int] = set()
-        reference = weakref.ref(self)
-        loop = self.loop
+        self.engine.connect(self._deliver, self._transport_failed)
 
-        def callback(event):
-            # This callback runs in the GIL executor, not on the asyncio thread.
-            loop.call_soon_threadsafe(deliver, event)
-
-        def deliver(event):
-            instance = reference()
-            if instance is not None:
-                instance._deliver(event)
-
-        native.connect(self.native, callback)
+    def _transport_failed(self, error):
+        for future, _, _ in self._pending.values():
+            if not future.done():
+                future.set_exception(RemoteFailure("local_engine_lost",
+                    f"Local engine disconnected: {error}", effect="unknown"))
+        if self._on_ready:
+            self._on_ready()
 
     def _deliver(self, event: dict) -> None:
         self.delivery_threads.add(threading.get_ident())
@@ -77,7 +67,7 @@ class ShellRuntime:
             if pending is None:
                 return
             future, operation, turn = pending
-            if operation in RUN_OPERATIONS and session:
+            if operation == "run" and session:
                 self._owners[session] = turn
             if not future.done():
                 future.set_result(event)
@@ -96,14 +86,17 @@ class ShellRuntime:
         if self._on_ready:
             self._on_ready()
 
-    async def _request(self, operation: str, *args, turn: str = "", cleanup: bool = False) -> dict:
+    async def _request(self, operation: str, *args, turn: str = "", cleanup: bool = False, approval: str | None = None) -> dict:
         if (self._closed or self._closing is not None) and not cleanup:
             raise ShellRejected("shell runtime is closed")
         request = next(self._sequence)
         future = self.loop.create_future()
         self._pending[request] = future, operation, turn
         try:
-            getattr(self.native, operation)(request, *args)
+            try:
+                self.engine.submit(operation, request, args, approval=approval)
+            except (ValueError, RuntimeError, asyncio.QueueFull) as exc:
+                raise ShellRejected(str(exc)) from exc
             try:
                 result = await asyncio.shield(future)
             except asyncio.CancelledError:
@@ -112,10 +105,10 @@ class ShellRuntime:
                 result = await asyncio.shield(future)
                 if operation == "acquire_write" and result["status"] == "write_acquired":
                     await self._request("release_write", result["session_id"], cleanup=True)
-                if operation in RUN_OPERATIONS and result["session_id"]:
+                if operation == "run" and result["session_id"]:
                     session = result["session_id"]
                     await self._discard_cancelled_session(session)
-                elif operation in RUN_OPERATIONS and result.get("output_id"):
+                elif operation == "run" and result.get("output_id"):
                     await self._request("release_output", result["output_id"], cleanup=True)
                 raise
             if result["status"] == "rejected":
@@ -126,8 +119,8 @@ class ShellRuntime:
 
     async def run(self, cmd: str, *, cwd: str = "", tty: bool = False, stdin: str | None = None,
                   wait_ms: int | None = None, timeout_ms: int | None = None,
-                  shell: str = "/bin/bash", turn_id: str = "", retain_output: bool = False, inline_limit: int = 0, load_output: bool = True,
-                  _authorized: bool = False) -> dict:
+                  shell: str = "/bin/bash", turn_id: str = "", retain_output: bool = False, load_output: bool = True,
+                  _approval: str | None = None) -> dict:
         if not load_output and not retain_output:
             raise ValueError("file handoff requires retained output")
         self._check_stdin(stdin, tty)
@@ -135,14 +128,10 @@ class ShellRuntime:
         self._foreground[task] = turn_id
         result = None
         try:
-            operation = "run_authorized" if _authorized else "run"
-            if stdin is not None:
-                operation += "_with_stdin"
             result = await self._request(
-                operation, shell, cmd, os.path.expanduser(cwd), tty,
+                "run", shell, cmd, os.path.expanduser(cwd), tty,
                 (1000 if tty else 300000) if wait_ms is None else wait_ms,
-                0 if timeout_ms is None else timeout_ms, inline_limit,
-                *((stdin,) if stdin is not None else ()), turn=turn_id,
+                0 if timeout_ms is None else timeout_ms, stdin, turn=turn_id, approval=_approval,
             )
             if load_output:
                 result = await self.materialize(result)
@@ -174,8 +163,6 @@ class ShellRuntime:
         if stdin is not None:
             if tty:
                 raise ShellRejected("stdin_pty_conflict: stdin requires tty=false")
-            if getattr(native, 'STDIN_VERSION', 0) != 1:
-                raise ShellRejected("stdin_unsupported: update the native extension to support stdin")
 
     async def _discard_cancelled_session(self, session_id: int) -> None:
         while True:
@@ -308,7 +295,7 @@ class ShellRuntime:
         if self._foreground or self._pending:
             raise ShellRejected("execution_busy: shell requests are still active")
         self._closed = True
-        self.native.close()
+        self.engine.close()
         self._owners.clear()
         self.completion_budgets.clear()
         self._completions.clear()
@@ -319,7 +306,7 @@ class ShellRuntime:
         if self._closing is None:
             self._closing = asyncio.create_task(self._close_runtime())
         await asyncio.shield(self._closing)
-        # call_soon_threadsafe deliveries were queued before native.close joined its workers.
+        # call_soon_threadsafe deliveries were queued before worker shutdown finished.
         await asyncio.sleep(0)
         self._owners.clear()
         self.completion_budgets.clear()
@@ -332,7 +319,7 @@ class ShellRuntime:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._closed = True
-        await asyncio.to_thread(self.native.close)
+        await asyncio.to_thread(self.engine.close)
 
     async def reset(self) -> ShellRuntime:
         await self.close()

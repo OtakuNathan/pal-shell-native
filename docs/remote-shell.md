@@ -15,7 +15,9 @@ an activated Pal installation.
 
 Version 0.6.0 also routes `read_file`, `edit_file`, and `write_file` through this
 resolver. IDs remain integers; names and shortcuts match exactly without
-converting numeric strings to IDs. The worker owns file authority and advertises
+converting numeric strings to IDs. Copy `name` from `list_remote` for a string
+selector, or pass its `target` as a JSON integer. An unmatched quoted ID reports
+the valid integer and configured name when the ID exists. The worker owns file authority and advertises
 `file_protocol_version=1`. Pal sends post-budget delivery ACKs and synchronizes
 context retirement and current request visibility before dependent mutations.
 Only fully delivered source lines authorize edits; a partial read cannot
@@ -30,12 +32,16 @@ authorize a complete overwrite. An unresolved operation is queried, never replay
 | Optional plugin | `pal_plugin/pal_shell_native/plugin.py`, packaged `remote` manifest | Native execution replacement through `execution:extensions`, composed remote Hub ownership |
 | Hub and Slot | `pal-shell-native/pal_plugin/pal_shell_remote/hub.py`, `slot.py` | Target configuration, existing startup commands, strict SSH forwarding, fd leases, connection retirement |
 | Separate worker package | `pal-shell-native/python/pal_shell_worker` | Authentication, native Runtime, operation journal, retained output, completion snapshots, machine metadata, privileged operation grants |
+| C++ local engine | `local_engine.cpp`, `runtime.cpp` | Private inherited socket, typed admission and events, native processes and output files for target 0 |
 | Native extensions | `pal-shell-native/rpc_module.cpp`, `runtime.cpp` | Portal RPC codec/dispatch, FF external async composition with libuv, native processes/PTY, optional output hard limit |
 
-No changes to Portal or FF are required. Their pinned source dependencies are
-reused. The RPC `.def` projection is shell-specific: its typed binary payload is a
-bounded MessagePack shell request. Native callbacks enqueue worker-loop events;
-they never await network I/O. The local Hub uses Pal's existing sidecar IPC.
+The local engine uses pinned Portal Typed RPC over an inherited socketpair.
+Each plugin generation owns its process and a private output directory. Pal
+checks the worker PID, protocol, package version and epoch before publication.
+Session IDs come from disjoint allocation ranges and old connections cannot
+deliver into new generations. The Hub remains a separate Python process with
+Pal's sidecar IPC. Its remote worker requests still use the protocol-v3
+MessagePack transport.
 
 SSH opens a local Unix socket forwarding to the worker's private Unix socket.
 It provides server authentication, public-key client authentication and encrypted
@@ -57,11 +63,31 @@ must not share ownership. Private keys never appear in tool parameters or result
   neither authorizes replay of the command or input.
 - `list_remote(refresh=False)`: always includes local target 0 and configured
   remote entries even when offline. Configured facts and timestamped worker probes
-  are separate. Refresh probes without waking or starting machines.
+  are separate. Summaries include `management.privilege` and `management.shutdown`,
+  with `source` (`configured`, `last_known`, `probe`, or `unknown`) and observation
+  time. Capability-only observations persist under `data/remote-capabilities`,
+  bound to the complete configured endpoint/identity; they never restore live
+  reachability or advance execution epochs. Before any probe, an optional
+  `static.privilege` table can declare `mode`, `configured`, and `allowed_actions`;
+  verified `supported` remains unknown. Missing facts remain unknown.
+  Refresh probes without waking or starting machines. With `refresh=true`,
+  `wait_ready_ms` (0–300000) retries transient probes until the authenticated worker
+  reports a usable shell and is not draining. Authentication/configuration errors
+  stop early. The deadline bounds probes/backoff; transport cleanup may follow.
 - `start_remote_target(target, action)`: explicitly invokes a configured existing startup
-  command. The action's exit code does not prove the machine or worker is ready.
+  command once. The action's exit code does not prove the machine or worker is ready.
+  Optional `wait_ready_ms` runs the same read-only readiness wait after action
+  success. A readiness timeout does not undo startup or authorize repeating it.
 - `shutdown_remote_target(target, action="shutdown")`: a separate management action; not
   plugin detach, transport close or session termination. Requires one trusted approval for each shutdown request.
+  In 0.8.0 on Linux, the protected helper asks systemd to schedule a two-second
+  timer before returning acceptance. It never uses a worker-owned sleep task.
+  The signed operation journal records the timer identity and prevents duplicate
+  scheduling. An accepted receipt means scheduled, not powered off. Disconnects
+  and lost receipts remain uncertain; never infer success from an offline probe.
+  This behavior requires upgrading both the worker and protected helper;
+  rerun the existing `--setup-sudo` installation flow after upgrading the worker.
+  The worker rejects an old helper without `shutdown_schedule_version=1`.
 - `run_shell_<shortcut>(...)`: fixed projection generated from each configured
   nonempty, unique `shortcut` (for example desktop, cloud or macos).
   Shortcuts allow 1–54 letters, digits, underscores or hyphens and are compiled
@@ -71,6 +97,12 @@ must not share ownership. Private keys never appear in tool parameters or result
 The native run_shell guidance offers enrollment of newly reachable SSH hosts via
 `pal.remote.setup`, with user agreement before worker installation/configuration.
 SSH connectivity alone does not enroll a target.
+
+A newly returned live session includes the exact indirect read call with its
+public session ID. Use it when fresh output is needed; completion notifications
+may already provide the result. The session fixes its target, and reading it
+does not rerun its command. Terminal results and subsequent reads do not repeat
+the initial hint; failed output export keeps its specific recovery action.
 
 All command results identify their target. Paths belong to that target. Local file
 tools cannot access a remote checkout; use the target shell when no corresponding
@@ -165,14 +197,14 @@ file-output behavior. The model's display budget is separate from these limits.
 ## Configuration and offline installation
 
 Install matching versions of Pal and the independently built native package on
-Pal's machine, then install the companion `plugin-remote-0.7.0.palpkg` into its
+Pal's machine, then install the companion `plugin-remote-0.9.0.palpkg` into its
 runtime. Hub/Slot and the plugin manifest are maintained in the native repository,
 not shipped inside Pal or the remote worker binary. Build and install with the
 existing package manager:
 
 ```sh
-pal package build ../pal-shell-native/pal_plugin --output ../pal-shell-native/dist
-pal package install ../pal-shell-native/dist/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>
+python ../pal-shell-native/packaging/build_palpkg.py --output ../pal-shell-native/dist ../pal-shell-native/wheelhouse/*.whl
+pal package install ../pal-shell-native/dist/plugin-remote-0.9.0.palpkg --runtime-root <runtime-root>
 ```
 
 If upgrading a runtime that previously provisioned the built-in `remote`, perform
@@ -183,13 +215,12 @@ restores the directory if publication fails. Other built-in identities and custo
 manifests remain protected against replacement. This migration does not change
 `config/remote.toml`, credentials, or remote workers; start Pal after installation.
 
-The palpkg uses the host interpreter because its adapter shares Pal's ports and
-native dependency. Its verify hook checks native Runtime/RPC and resident contract
-availability; it never installs dependencies or restarts Pal. Install the matching
-native wheel first. CLI installation prepares files; startup or authorized plugin
-rescan/attach activates them. Existing resident execution changes still require
-host activation. The package uses the ordinary community-plugin lifecycle,
-including detach/reload, saved disable state and package rollback.
+The package brings its own local worker and ABI-specific Hub dependencies.
+Verification starts a disposable local worker and checks the bundled Hub
+RPC client. CLI installation prepares files, and an idle plugin reload replaces
+the local worker and Hub in a running Pal. Active sessions and retained outputs
+must settle before the reload. The package keeps the existing community-plugin
+lifecycle, saved disable state and package rollback.
 
 The worker machine only needs the worker package/binary and Bash,
 not a second Pal core. Linux and macOS have the POSIX backend. Windows has an

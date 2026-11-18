@@ -1,3 +1,35 @@
+## 0.9.0
+
+- The remote plugin package bundles a C++ local worker and the Python Hub's
+  native RPC dependencies. An idle reload replaces both processes in the running
+  Pal host. Bunshin uses a separate worker inside its sandbox.
+- Local execution uses Portal Typed RPC over a private inherited socket.
+  Existing remote protocol-v3 workers remain compatible.
+
+# 0.8.0 — remote readiness and actionable results (unreleased)
+
+- New live local/remote sessions include one exact `call_tool` invocation for
+  `read_shell_session`, with the returned session ID. Completed results and
+  ordinary reads do not repeat that guidance; output recovery still takes priority.
+- `list_remote` summaries include management/privilege capabilities, observation
+  time and provenance. Successful probes persist capability-only observations
+  across Hub recreation, bound to the configured endpoint and identity. Cached
+  capabilities never establish current readiness or authorize privileged work.
+- `list_remote(refresh=true)` and `start_remote_target` accept `wait_ready_ms`
+  (0–300000). Only metadata probes retry with bounded backoff; startup runs once.
+  Authentication/configuration failures stop waiting; cancellation drains the probe.
+- Linux shutdown uses a systemd-owned two-second timer and reports acceptance
+  only after the scheduler returns. The signed helper journal retains the timer
+  identity and suppresses replay. Acceptance is not proof of power-off; lost
+  receipts remain unknown and must not be blindly retried.
+- Upgrade the host wheel/plugin to 0.8.0. For scheduled shutdown, also upgrade the
+  remote worker and regenerate/install its protected helper using `--setup-sudo`.
+  A new worker rejects shutdown through an old helper before asking for approval.
+  Ordinary shell/file RPCs remain protocol 3 / file protocol 1; native API 2 is
+  unchanged. macOS configured shutdown commands retain their existing behavior.
+
+No running Pal host or remote worker is restarted by this source change.
+
 # 0.7.0 — current Pal host interfaces
 
 - Register asynchronous control actions with `ControlActionSpec`; deliver decision replies through `CORE_CONTROL`.

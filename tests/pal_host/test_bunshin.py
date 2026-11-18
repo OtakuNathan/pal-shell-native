@@ -55,10 +55,11 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
             {"invocation_id": "role", "repo_path": str(self.root)})
         self.scoped.begin_tool_result_turn(turn_id="role", scope_key="role")
 
-    def install_worker(self, root):
+    def install_worker(self, root, *, plugin_root=None):
         import sqlite3
         root.mkdir(parents=True, exist_ok=True)
-        plugin_root = Path(__file__).resolve().parents[2] / 'pal_plugin'
+        if plugin_root is None:
+            plugin_root = Path(__file__).resolve().parents[2] / 'pal_plugin'
         with sqlite3.connect(root / 'pal.sqlite3') as db:
             db.execute('CREATE TABLE IF NOT EXISTS plugin_bundles (filesystem_path TEXT, enabled INTEGER, attached INTEGER)')
             db.execute('INSERT INTO plugin_bundles VALUES (?, 1, 1)', (str(plugin_root),))
@@ -382,11 +383,18 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
                 await scope.acknowledge_tool_result_async(call.call_id, 'role')
                 self.assertFalse(self.host.has_work)
 
-    async def test_linux_sandbox_imports_only_extension_and_runs_native_shell(self):
+    async def test_linux_sandbox_runs_the_bundled_engine_without_native_imports(self):
         if sys.platform != "linux" or not shutil.which("bwrap"):
             self.skipTest("Linux bubblewrap integration")
         from pal.bunshin.sandbox import build_sandboxed_runner_invocation
-        import _pal_shell_runtime
+        from pal_shell_contracts.package_layout import packaged_engine
+        from pal_shell_native.local_engine import _engine_source
+
+        plugin_root = self.root / "plugins/community/remote"
+        shutil.copytree(Path(__file__).resolve().parents[2] / "pal_plugin", plugin_root)
+        engine = packaged_engine(plugin_root)
+        engine.parent.mkdir(parents=True)
+        shutil.copyfile(_engine_source(None), engine)
         endpoint = self.root / "data/bunshin-role/role.sock"
         endpoint.parent.mkdir(parents=True)
         endpoint.write_text("test endpoint")
@@ -400,7 +408,7 @@ class BunshinNativeTests(unittest.IsolatedAsyncioTestCase):
 from importlib.abc import MetaPathFinder
 class NoRPC(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'pal_shell_worker', '_pal_shell_rpc'}:
+        if fullname.split('.')[0] in {'pal_shell_worker', '_pal_shell_rpc', '_pal_shell_runtime'}:
             raise AssertionError('Local role imported remote dependency: ' + fullname)
 sys.meta_path.insert(0, NoRPC())
 from pal.core.runtime import PalCore
@@ -423,10 +431,9 @@ async def main():
         core.close()
 asyncio.run(main())
 """
-        self.install_worker(self.root)
+        self.install_worker(self.root, plugin_root=plugin_root)
         argv, env = build_sandboxed_runner_invocation(runtime_root=self.root, pack=pack,
-            argv=[str(Path(sys.executable).resolve()), "-c", script], env={"PATH": os.environ["PATH"], "PAL_SHELL_BACKEND": "native",
-                "PYTHONPATH": os.pathsep.join([str(Path(_pal_shell_runtime.__file__).parent), str(Path(__file__).resolve().parents[2] / "pal_plugin")]), "PAL_TEST_HIDDEN": str(hidden)})
+            argv=[str(Path(sys.executable).resolve()), "-c", script], env={"PATH": os.environ["PATH"], "PYTHONPATH": str(plugin_root), "PAL_TEST_HIDDEN": str(hidden)})
         result = await asyncio.to_thread(subprocess.run, argv, env=env, cwd=repo, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SANDBOX_NATIVE_OK", result.stdout)

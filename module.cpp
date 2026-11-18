@@ -1,4 +1,53 @@
 #include "runtime.h"
+#include "portal/extensions/flux_foundry/python_interpreter_executor.h"
+#include <atomic>
+
+namespace portal::pal_shell {
+class Runtime : public Engine {
+public:
+    explicit Runtime(unsigned capacity) : Engine(capacity) {}
+    ~Runtime() { close(); }
+
+    void bind(std::function<void(const Event&)> callback) {
+        Engine::bind([this](const Event& event) {
+            auto snapshot = std::make_shared<Event>(event);
+            gil_.dispatch(flux_foundry::task_wrapper_sbo([this, snapshot]() noexcept {
+                delivering_ = this;
+                try { callback_(*snapshot); }
+                catch (...) { ++errors_; PyErr_Clear(); }
+                delivering_ = nullptr;
+            }));
+        });
+        callback_ = std::move(callback);
+    }
+
+    void close() {
+        if (delivering_ == this)
+            throw std::runtime_error("close must be called on the host thread, outside the native callback");
+        if (closing_.exchange(true)) return;
+        // As in the legacy binding, process reaping must allow other Python threads to run.
+        PyThreadState* released = PyGILState_Check() ? PyEval_SaveThread() : nullptr;
+        try {
+            Engine::close();
+        } catch (...) {
+            if (released) PyEval_RestoreThread(released);
+            throw;
+        }
+        if (released) PyEval_RestoreThread(released);
+        gil_.shutdown();
+        callback_ = {};
+    }
+
+    int callback_errors() const { return errors_.load() + Engine::callback_errors(); }
+
+private:
+    inline static thread_local Runtime* delivering_ = nullptr;
+    std::atomic<int> errors_{0};
+    std::atomic<bool> closing_{false};
+    std::function<void(const Event&)> callback_;
+    flux_foundry_extensions::python_interpreter_executor gil_;
+};
+}
 #define PORTAL_IMPORT_DEF "import.def"
 #define PORTAL_EXPORT_DEF "export.def"
 #include "portal/portal.h"

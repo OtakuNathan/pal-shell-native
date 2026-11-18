@@ -13,6 +13,7 @@ from pal_shell_contracts import Target  # Compatibility export for existing call
 from pal_shell_worker.client import Connection, load_private_key
 from pal_shell_worker.protocol import RemoteError
 from .admission import RequestAdmission
+from .capability_cache import capability_summary
 
 
 async def close_connection(connection):
@@ -21,7 +22,7 @@ async def close_connection(connection):
 
 
 class RemoteSlot:
-    def __init__(self, config, executor=None):
+    def __init__(self, config, executor=None, *, capability_cache=None):
         from pal_shell_worker.transport import Executor
         self.executor = executor or Executor()
         self.owns_executor = executor is None
@@ -43,6 +44,8 @@ class RemoteSlot:
         self.tunnel_stderr_path = ""
         self.directory = None
         self.cached = None
+        self.capability_cache = capability_cache
+        self.last_capabilities = capability_cache.load(config) if capability_cache else None
         self.last_error = ''
         self.probe_details = {}
         self.probed_at = None
@@ -149,8 +152,11 @@ class RemoteSlot:
                         await self._finish_stderr(self.tunnel_stderr_transport, self.tunnel_diagnostics)
                         self.tunnel_diagnostics = None
                         self.tunnel_stderr_transport = None
-                        raise RemoteError('ssh_unavailable', 'SSH authentication or forwarding failed; cause: ' +
-                            self._ssh_diagnostic())
+                        diagnostic = self._ssh_diagnostic()
+                        denied = any(text in diagnostic.lower() for text in (
+                            'permission denied', 'host key verification failed', 'remote host identification has changed'))
+                        raise RemoteError('ssh_authentication_failed' if denied else 'ssh_unavailable',
+                                          'SSH authentication or forwarding failed; cause: ' + diagnostic)
                     await asyncio.sleep(.05)
         connection = Connection(path, client_id=c.client_id, private_key=load_private_key(c.client_key),
                                 worker_id=c.worker_id, executor=self.executor)
@@ -257,7 +263,10 @@ class RemoteSlot:
             if not self.lease:
                 try:
                     await self._connect()
-                except (OSError, TimeoutError, ValueError) as exc:
+                except ValueError as exc:
+                    await self._disconnect()
+                    raise RemoteError('invalid_configuration', 'Invalid target identity/configuration: ' + exception_reason(exc)) from exc
+                except (OSError, TimeoutError) as exc:
                     await self._disconnect()
                     raise RemoteError('connection_unavailable',
                         'Connection setup failed before command submission; inspect SSH and enrolled identity; cause: ' + exception_reason(exc) + '; SSH stderr: ' + self._ssh_diagnostic()) from exc
@@ -291,33 +300,68 @@ class RemoteSlot:
                     if self.lease is lease:
                         await self._disconnect()
 
-    async def describe(self, refresh=False):
+    async def describe(self, refresh=False, *, wait_ready_ms=0):
+        if wait_ready_ms and not refresh:
+            raise RemoteError('invalid_request', 'wait_ready_ms requires refresh=true')
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + wait_ready_ms / 1000
+        attempts = 0
+        delay = .25
         reachable = None
-        if refresh:
+        fresh = False
+        ready = False
+        while refresh:
+            attempts += 1
             self.probed_at = utc_now()
             try:
-                self.cached = await self.request('metadata', {'refresh': True})
+                async with asyncio.timeout_at(deadline if wait_ready_ms else None):
+                    self.cached = await self.request('metadata', {'refresh': True})
                 reachable = True
+                fresh = True
                 self.last_error = ""
                 self.probe_details = {}
+                self.last_capabilities = {key: self.cached[key] for key in (
+                    'privilege', 'power', 'observed_at', 'worker_id', 'runtime_epoch') if key in self.cached}
+                if self.capability_cache:
+                    self.capability_cache.save(self.config, self.last_capabilities)
+                ready = bool(self.cached.get('shell_ready')) and not self.cached.get('draining', False)
                 if not self.cached.get('draining'):
                     self.expected_offline = False
+                if ready:
+                    break
             except RemoteError as exc:
                 reachable = False
+                fresh = False
                 self.last_error = exception_reason(exc)
                 self.probe_details = {"code": exc.code, "error": self.last_error}
-        power = (self.cached or {}).get('power')
-        shutdown = None if power is None else bool(power.get('shutdown') and power.get('policy') != 'disabled')
+                if exc.code not in {'transport_lost', 'transport_timeout', 'transport_closed',
+                                    'transport_unavailable', 'connection_unavailable', 'ssh_unavailable'}:
+                    break
+            except TimeoutError:
+                reachable = False
+                fresh = False
+                self.last_error = 'Readiness deadline expired during the worker probe'
+                self.probe_details = {'code': 'readiness_timeout', 'error': self.last_error}
+                break
+            if not wait_ready_ms or loop.time() >= deadline:
+                break
+            await asyncio.sleep(min(delay, max(0, deadline - loop.time())))
+            delay = min(2, delay * 2)
+            if loop.time() >= deadline:
+                break
+        management = capability_summary(self.config, self.last_capabilities, fresh=fresh)
+        timed_out = bool(wait_ready_ms and not ready and loop.time() >= deadline)
         return {'target': self.config.target, 'name': self.config.name, 'shortcut': self.config.shortcut, 'static': self.config.static,
                 'dynamic': self.cached, 'reachable': reachable, 'probe_error': self.last_error,
                 'probe_details': self.probe_details, 'probed_at': self.probed_at,
+                'readiness': 'ready' if ready else 'unverified' if not refresh else 'not_ready',
+                'wait_timed_out': timed_out, 'probe_attempts': attempts,
+                'waited_ms': round((loop.time() - started) * 1000),
                 'management': {
+                    **management,
                     'start': {'supported': bool(self.config.start_actions),
                               'reason': '' if self.config.start_actions else 'Start is not supported: no startup action is configured'},
-                    'shutdown': {'supported': shutdown,
-                                 'reason': 'Shutdown support has not been probed' if shutdown is None else
-                                           ('' if shutdown else 'Shutdown is not supported by this target'),
-                                 'observed_at': (self.cached or {}).get('observed_at')},
                 },
                 'execution': self.execution.status(), 'runtime_changed': self.previous_epoch is not None,
                 'expected_offline': self.expected_offline, 'start_actions': list(self.config.start_actions),

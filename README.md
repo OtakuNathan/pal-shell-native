@@ -2,10 +2,11 @@
 
 Optional shell plugin for [Pal](https://github.com/OtakuNathan/Pal). Its `.palpkg`
 owns the `run_shell` schema and guidance, session controls, remote routing,
-observations, approvals and Bunshin integration. Its CPython wheel runs POSIX
-processes through Flux Foundry, Portal and statically linked libuv.
+observations, approvals and Bunshin integration. Its bundled C++ sidecar runs
+local POSIX commands over a private Portal Typed RPC connection. The engine uses
+Flux Foundry and statically linked libuv.
 
-Install the wheel in Pal's interpreter and attach the matching plugin package.
+Install the plugin package through Pal and attach it.
 Attaching replaces Pal's built-in shell through the generic execution extension
 port. Detaching restores the built-in shell after outstanding work is settled.
 Installing the wheel alone does not activate Native shell.
@@ -33,19 +34,16 @@ while preserving native API 2 and remote protocol 3. Calls without input continu
 to work with older compatible workers. Calls with input check capability before
 submission and fail without execution if the worker or protected helper lacks
 support. Remote operation identities and privilege approvals bind the exact
-input. Existing RPC-frame and approval-envelope size limits still apply; input
-is never silently truncated. Approval cards include the supplied input.
+input. Local Typed RPC allows up to 512 KiB of UTF-8 stdin. Remote RPC-frame
+and approval-envelope size limits still apply. Oversize input is rejected. Approval cards include the supplied input.
 The worker drops stdin from its operation journal after the initial execution
 result or failure. A running child keeps its input file; replay checks keep the
 original fingerprint without retaining the input body.
 
-Upgrade the host wheel, plugin and worker bundle together. For privileged input,
-also update the root-owned management bundle on Linux or the privilege monitor
-and askpass installation on macOS, preserving policy and operation journals.
-Settle active sessions and retained outputs before activation. Native extensions
-already loaded into Pal require a host restart; worker binaries require their
-own restart. Installing files or reloading Python plugin code alone does not
-replace an already loaded native extension.
+For remote privileged input, the remote worker and its management helpers must
+advertise support. An already compatible protocol-v3 worker can keep running
+when the Pal plugin is upgraded. Settle active sessions and retained outputs before
+activation.
 
 ## Targeted file tools
 
@@ -71,7 +69,7 @@ to verify the pairing. Both repositories must be updated together.
 
 ## Compatibility
 
-- Backend 0.7.0 exports `_pal_shell_runtime`, `API_VERSION = 2`.
+- The worker wheel exports `_pal_shell_runtime`, `API_VERSION = 2`.
 - Pal must support file delivery protocol v1, request visibility and history
   retirement. The exported engine's `SOURCE.json` records the exact source hashes.
   Compatible versions must preserve the existing host contracts, including
@@ -87,46 +85,27 @@ to verify the pairing. Both repositories must be updated together.
 
 ## Install a release
 
-Download this README, the matching wheel, `test_backend.py`, and `SHA256SUMS` from
-[the release](https://github.com/OtakuNathan/pal-shell-native/releases). Verify the
-checksum of each downloaded asset against that release's `SHA256SUMS` before use.
-Release assets are the distribution channel; this project is not published to PyPI.
+Download the plugin package and `SHA256SUMS` from the release, then verify the
+package checksum. Download the separate worker bundle when setting up a remote
+machine. The worker wheel is also available for development and worker hosts
+that run directly from a Python environment. [Release assets](https://github.com/OtakuNathan/pal-shell-native/releases)
 
-Set `PAL_PYTHON` to the **actual interpreter running Pal**, not whichever `python`
-happens to be on PATH. In a Pal virtual environment, installation is:
-
-```bash
-PAL_PYTHON=/absolute/path/to/pal-venv/bin/python
-"$PAL_PYTHON" -m pip install /absolute/path/to/pal_shell_native-0.7.0-MATCHING_TAGS.whl
-"$PAL_PYTHON" -c 'import _pal_shell_runtime as n; print(n.__file__, n.API_VERSION)'
-"$PAL_PYTHON" /absolute/path/to/test_backend.py
-```
-
-If Pal deliberately uses an OS-managed Python, do not override its package
-protections. Instead install with `--target` into a **new versioned directory**
-under the actual runtime root (for example `<runtime-root>/native/shell-runtime/0.6.1`).
-Test that directory with the same interpreter and a temporary `PYTHONPATH`; then
-add it to Pal's launch environment, preserving its existing import paths.
-Check `n.__file__` to detect any older `.so` shadowing the new installation.
-Do not overwrite or unload a binary already mapped by a running process.
-
-Install `plugin-remote-0.7.0.palpkg` using Pal's package installation flow. For
+Install `plugin-remote-0.9.0.palpkg` using Pal's package installation flow. For
 offline preparation:
 
 ```sh
-pal package install /absolute/path/to/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>
+pal package install /absolute/path/to/plugin-remote-0.9.0.palpkg --runtime-root <runtime-root>
 ```
 
 The package retains the `remote` plugin ID for upgrades from 0.4.0. Its entrypoint
 is now `pal_shell_native.plugin`; `execution:extensions` is the required Pal port.
 `PAL_SHELL_BACKEND` no longer selects an implementation. Preserve other launch
-settings and import paths. A binary or Pal core upgrade requires a new process;
-ordinary Python plugin reload uses `manage_plugin(name="remote", operation="reload")` at an idle lifecycle
-boundary. `manage_plugin(operation="attach")` loads an enabled detached plugin and preserves an already
+settings and import paths. Reload `remote` at an idle lifecycle boundary to replace its local engine and Hub.
+A Pal core upgrade still requires restarting Pal. `manage_plugin(operation="attach")` loads an enabled detached plugin and preserves an already
 attached instance.
 Never overwrite a mapped binary or drop unresolved work to force a reload.
 
-Validate wheel import location/API, then check the installed plugin's `run_shell`
+Check the installed plugin's `run_shell`
 schema contains `wait_ms`, `tty` and `target`, discover `read_shell_session` and the needed simple session actions, and run a
 harmless command. Test a background wait and observation before real work. The
 acceptance suite also covers failed activation, busy detach, restored built-in
@@ -134,9 +113,9 @@ schema, remote routing and Bunshin sandbox dependencies without paid LLM calls.
 
 To roll back the plugin, settle live sessions and retained output, then detach or
 disable `remote` through Pal's lifecycle. The built-in shell becomes available.
-Changing a wheel or reverting Pal core additionally requires restoring compatible
-launch paths and restarting via the host supervisor. Keep previous artifacts and
-runtime data. Never automatically retry an uncertain command on another backend.
+Reverting to an older package may require its matching host wheel. Pal core
+changes require activation through the host supervisor. Keep previous artifacts
+and runtime data. Never automatically retry an uncertain command on another backend.
 
 ## Build from source
 
@@ -337,24 +316,23 @@ active sessions and retained outputs; building/installing files does not reload 
 
 `pal_plugin/` owns the Native execution implementation, tools, session lifecycle
 adapter, Bunshin driver, remote Hub, target Slots, setup skill and manifest.
-It ships as `plugin-remote-0.7.0.palpkg` alongside the native wheels and independent
-worker bundles. The worker needs no Pal installation; the client plugin runs in
-Pal's host interpreter and reuses its ports, sidecar and resource lifecycle APIs.
+It ships as `plugin-remote-0.9.0.palpkg`, with a standalone engine per platform
+and separate Hub RPC dependencies per supported Python ABI. The remote worker
+bundles still use protocol v3.
 
-With Pal's package tools installed, build using:
+Build from release wheels using Pal's package tools:
 
 ```sh
-pal package build pal_plugin --output dist
+python packaging/build_palpkg.py --output dist wheelhouse/*.whl
 ```
 
-Install the matching native wheel into Pal's interpreter first, then use
-`pal package install dist/plugin-remote-0.7.0.palpkg --runtime-root <runtime-root>`
+Use `--complete` when assembling a release with every supported platform and
+Python ABI. Use `pal package install dist/plugin-remote-0.9.0.palpkg --runtime-root <runtime-root>`
 for offline preparation, or the running host's authorized package installation
-flow. Verification checks the native Runtime, RPC client and resident Pal contract;
-it does not install dependencies or restart services. The plugin uses the existing
-community package lifecycle and defaults to enabled. A missing or empty target
-configuration starts no Hub process. Native wheel installation alone does not
-install the companion palpkg into any runtime.
+flow. Verify the installation's activation status. If it only prepared files,
+`manage_plugin(name="remote", operation="reload")` replaces the running generation
+once it is idle. A missing or empty target configuration starts no remote Hub.
+Bunshin starts its own local engine inside its sandbox.
 
 Pal integration tests need `pal_plugin` on PYTHONPATH when testing source checkouts.
 Standalone worker bundles intentionally contain only the worker-side package.

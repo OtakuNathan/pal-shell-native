@@ -89,7 +89,7 @@ def save(path, record):
         temporary.unlink(missing_ok=True)
 
 
-def command(action):
+def command(action, *, operation_key=None):
     if action['action'] == 'shell_command':
         return ['/bin/sh', '-c', action['cmd']]
     if action['action'] == 'apt_update':
@@ -98,7 +98,11 @@ def command(action):
         return ['/usr/bin/apt-get','--assume-yes','--no-remove','install','--',
                 *(literal_package_selector(name) for name in action['packages'])]
     if action['action'] == 'shutdown':
-        return ['/usr/bin/systemctl','poweroff']
+        if not operation_key:
+            raise ValueError('Shutdown scheduling requires an operation identity')
+        return ['/usr/bin/systemd-run', '--quiet', '--unit=pal-shell-shutdown-' + operation_key,
+                '--on-active=2s', '--timer-property=AccuracySec=100ms',
+                '/usr/bin/systemctl', 'poweroff']
     raise ValueError('Unsupported action')
 
 
@@ -163,9 +167,12 @@ def execute(config, envelope):
         raise
     # Once process creation is attempted, a crash leaves pending/UNKNOWN.
     args = envelope['args']
-    code = run_child(command(action), args.get('timeout_ms'), cwd=action.get('cwd', '/'),
+    code = run_child(command(action, operation_key=key), args.get('timeout_ms'), cwd=action.get('cwd', '/'),
                      **({'stdin': args['stdin']} if args.get('stdin') is not None else {}))
-    save(path,{**record,'state':'complete','returncode':code})
+    receipt = ({'shutdown_schedule': {'unit': 'pal-shell-shutdown-' + key + '.timer',
+                                     'delay_ms': 2000, 'accepted': True}}
+               if action['action'] == 'shutdown' and code == 0 else {})
+    save(path,{**record,'state':'complete','returncode':code, **receipt})
     return code if code>=0 else 128-code
 
 
@@ -184,7 +191,9 @@ def main():
         mode = data.get('mode','execute')
         if mode == 'status':
             protected(Path(config['state_directory']),directory=True)
-            print(json.dumps({'ok':True,'mode':'signed_sudoers','allowed_actions':config['allowed_actions'], 'stdin_version':1}))
+            print(json.dumps({'ok':True,'mode':'signed_sudoers','allowed_actions':config['allowed_actions'],
+                              'stdin_version':1, 'shutdown_schedule_version':
+                              1 if os.access('/usr/bin/systemd-run', os.X_OK) else 0}))
             return 0
         if mode == 'query':
             key = digest([config['client_id'],data['runtime_epoch'],data['operation_id']])

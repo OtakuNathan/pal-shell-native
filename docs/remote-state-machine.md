@@ -50,6 +50,15 @@ acknowledgment are environment actions. Epoch identity and operation deduplicati
 are assumed to follow the existing authenticated worker protocol. A full Pal
 process crash still has no durable native-handle journal.
 
+Version 0.8.0 changes the Linux shutdown acceptance boundary to successful
+systemd timer scheduling, recorded by the protected helper. This uses the same
+existing accepted-shutdown event and reducer; it does not equate transport loss
+with acceptance or power-off. Readiness retries perform metadata reads only.
+Persisted capability summaries cannot establish a current epoch or settle an
+operation. Scheduler/receipt failures remain UNKNOWN and do not reopen worker
+admission while shutdown may already be scheduled. OS scheduling itself is
+outside the bounded model and is covered by helper/worker regression tests.
+
 Safety checks cover no lost effects, no replay, no resurrection, irreversible
 signing, monotone completion, independent control evidence and old-epoch fencing.
 Liveness is conditional: a completed operation eventually retires if its worker
@@ -103,3 +112,15 @@ committed runtime table, or if a model/mutant/configuration is missing.
 Counterexample logs and a hash-stamped summary are retained in the chosen output
 directory. The CI artifact contains these synthetic traces. The checked-in
 remote-formal-validation.json records the local verification result.
+
+
+## Local generation admission
+
+The local C++ engine keeps the existing session state machine. Pal receives its
+events on a private inherited socket. `scripts/export_local_admission.py`
+enumerates the frame guard used by the Python client into
+`spec/session/LocalAdmission.tla`. `LocalGeneration.tla` checks that a closed
+connection never delivers, a solicited reply belongs to a known request, and
+session and output IDs belong to the current generation. The model abstracts
+each generation's disjoint ID range to one representative ID. Package lifecycle
+tests exercise process replacement and socket closure.

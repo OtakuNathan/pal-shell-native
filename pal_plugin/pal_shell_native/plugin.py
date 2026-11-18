@@ -1,8 +1,11 @@
 """The optional native plugin owns local execution, sessions and remote routing."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from pal.core.module_registry import ModuleHandle, MODULE_TIER_DETACHABLE
 from .runtime import NativeExecutionRuntime
+from .local_engine import LocalEngine, VERSION
 
 
 class NativeExtension:
@@ -19,6 +22,11 @@ class NativeExtension:
         previous_files = getattr(getattr(previous, 'shell_owner', None), 'files', None)
         if previous_files is not None:
             runtime.shell_owner.files.restore(previous_files.snapshot())
+        runtime.shell_owner.local_engine = LocalEngine(
+            package_root=Path(__file__).resolve().parent.parent,
+            runtime_root=self.runtime_root, role=not self.resident,
+        )
+        if previous_files is not None:
             previous_files.handed_off = True
         return runtime
 
@@ -63,7 +71,7 @@ class NativeExtension:
 
 class NativePlugin:
     plugin_id = 'remote'  # Retain the installed package identity across the 0.4 upgrade.
-    version = '0.7.0'
+    version = VERSION
 
     def __init__(self, runtime_root):
         self.runtime_root = runtime_root

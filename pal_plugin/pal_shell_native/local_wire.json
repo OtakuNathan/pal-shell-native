@@ -1,0 +1,76 @@
+{
+  "records": {
+    "Hello": [
+      1,
+      {
+        "pid": "u64",
+        "epoch": "blob64",
+        "version": "blob32"
+      }
+    ],
+    "Command": [
+      2,
+      {
+        "request": "u64",
+        "operation": "blob32",
+        "session": "u64",
+        "shell": "blob4096",
+        "text": "blob262144",
+        "cwd": "blob4096",
+        "stdin": "blob524288",
+        "has_stdin": "boolean",
+        "tty": "boolean",
+        "authorized": "boolean",
+        "wait": "i32",
+        "timeout": "i32",
+        "rows": "i32",
+        "columns": "i32",
+        "terminal": "boolean",
+        "approval": "blob64",
+        "epoch": "blob64"
+      }
+    ],
+    "Event": [
+      3,
+      {
+        "request": "u64",
+        "session": "u64",
+        "output": "u64",
+        "event_kind": "blob32",
+        "event_sequence": "u64",
+        "watch_generation": "u64",
+        "elapsed_ms": "u64",
+        "remaining_ms": "u64",
+        "wake_remaining_ms": "u64",
+        "watching": "boolean",
+        "has_deadline": "boolean",
+        "has_wake": "boolean",
+        "status": "blob32",
+        "error": "blob8192",
+        "stdout_path": "blob4096",
+        "stderr_path": "blob4096",
+        "stdout_total": "u64",
+        "stderr_total": "u64",
+        "returncode": "i32",
+        "signal": "i32",
+        "has_returncode": "boolean",
+        "tty": "boolean",
+        "truncated": "boolean"
+      }
+    ]
+  },
+  "methods": {
+    "Hello": [
+      1,
+      "Hello",
+      []
+    ],
+    "Submit": [
+      2,
+      "blob8192",
+      [
+        "Command"
+      ]
+    ]
+  }
+}

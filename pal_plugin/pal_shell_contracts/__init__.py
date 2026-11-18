@@ -60,16 +60,28 @@ class RemoteFailure(RuntimeError):
 
 def resolve_target(targets, value):
     """Exact registry lookup. Never coerce a numeric string or guess an alias."""
+    numeric_hint = None
     if type(value) is int:
         matches = [target for target in targets if target.target == value]
     elif isinstance(value, str) and value:
-        matches = [target for target in targets if value in (target.name, target.shortcut)]
+        matches = []
+        numeric_string = value.isascii() and value.isdecimal()
+        for target in targets:
+            if value in (target.name, target.shortcut):
+                matches.append(target)
+            elif numeric_string and value == str(target.target):
+                numeric_hint = target
     else:
         matches = []
     matches = {target.target: target for target in matches}
     if len(matches) != 1:
+        if not matches and numeric_hint is not None:
+            raise RemoteFailure('invalid_target',
+                f'Target ID {numeric_hint.target} was supplied as a string. '
+                f'Pass the JSON integer {numeric_hint.target} or exact name {json.dumps(numeric_hint.name)}.')
         raise RemoteFailure('ambiguous_target' if matches else 'invalid_target',
-                            'Target alias is ambiguous' if matches else 'Target is not configured')
+                            'Target alias is ambiguous' if matches else
+                            'Target is not configured. Use an exact name, shortcut or JSON integer ID from list_remote.')
     target = next(iter(matches.values()))
     binding = hashlib.sha256(json.dumps(asdict(target), sort_keys=True).encode()).hexdigest()
     return {'target': target.target, 'target_name': target.name,
@@ -79,4 +91,4 @@ def resolve_target(targets, value):
 class RemotePort(Protocol):
     async def resolve(self, target: int | str) -> dict: ...
     async def request(self, target: int, method: str, params: dict, epoch: str | None = None, *, binding: str = '') -> dict: ...
-    async def list(self, refresh: bool = False, *, target: int | None = None) -> list[dict]: ...
+    async def list(self, refresh: bool = False, *, target: int | str | None = None, wait_ready_ms: int = 0) -> list[dict]: ...

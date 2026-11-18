@@ -410,7 +410,11 @@ class Worker:
                                'installation': self.management_probe or {'ok':False,'reason':'not_probed'},
                                'configured': bool(self.config.management_helper or self.config.privilege_helper),
                                'supported': trusted_executable(self.config.management_helper) if sys.platform.startswith('linux') else trusted_executable(self.config.privilege_helper) and trusted_executable(self.config.askpass_helper),
-                               'credential_state': 'not_required' if sys.platform.startswith('linux') else 'remote_only_not_probed', 'approval_required': True}, 'power': {'shutdown': bool('shutdown' in self.config.management_actions and trusted_executable(self.config.management_helper)) if sys.platform.startswith('linux') else bool(self.config.shutdown_argv),
+                               'credential_state': 'not_required' if sys.platform.startswith('linux') else 'remote_only_not_probed', 'approval_required': True}, 'power': {'shutdown': bool(
+                                   'shutdown' in self.config.management_actions and trusted_executable(self.config.management_helper)
+                                   and (self.management_probe or {}).get('ok')
+                                   and (self.management_probe or {}).get('shutdown_schedule_version') == 1
+                               ) if sys.platform.startswith('linux') else bool(self.config.shutdown_argv),
                                'policy': self.config.shutdown_policy}}
         if method == 'observe':
             if set(args) != {'session_id'}:

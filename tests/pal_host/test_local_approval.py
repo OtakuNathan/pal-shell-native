@@ -1,14 +1,12 @@
 """Local privilege admission and cancellation without invoking system sudo."""
 import asyncio
 from pathlib import Path
-import shlex
 import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from pal_shell_native.adapter import ShellRuntime, ShellRejected
-import _pal_shell_runtime as native
 from pal_shell_native.router import ShellRouter
 from pal_shell_contracts import RemoteFailure
 
@@ -47,12 +45,9 @@ class LocalApprovalTests(unittest.IsolatedAsyncioTestCase):
             self.owner.approvals.request.side_effect = approve
             result = await self.router.run(command, sudo=True, cwd='~', turn_id='turn')
             self.assertEqual(result['target'], 0)
-            launcher = launch.call_args.args[0]
-            self.assertEqual(shlex.split(launcher),
-                ['exec', '/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', command])
+            self.assertEqual(launch.call_args.args[0], command)
             self.assertEqual(launch.call_args.kwargs['cwd'], str(Path.home()))
-            self.assertEqual(launch.call_args.kwargs['shell'], '/bin/sh')
-            self.assertTrue(launch.call_args.kwargs['_authorized'])
+            self.assertTrue(launch.call_args.kwargs['_approval'])
             self.assertFalse(self.router._foreground)
 
     async def test_rejection_expiry_and_unavailable_route_never_launch(self):
@@ -101,12 +96,4 @@ class LocalApprovalTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ShellRuntime, 'run', AsyncMock(return_value=self.result)) as launch:
             await self.router.run('echo sudo', turn_id='turn')
             self.owner.approvals.request.assert_not_called()
-            self.assertNotIn('_authorized', launch.call_args.kwargs)
-
-    async def test_old_native_binary_is_rejected_before_creating_runtime(self):
-        with patch.object(native, 'PRIVILEGE_GATE_VERSION', 0), \
-             patch.object(native, 'Runtime') as runtime:
-            with self.assertRaisesRegex(ShellRejected, 'native_incompatible'):
-                ShellRuntime()
-            runtime.assert_not_called()
-
+            self.assertNotIn('_approval', launch.call_args.kwargs)

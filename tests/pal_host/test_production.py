@@ -325,7 +325,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_reads_and_invalid_session_have_result_specific_guidance(self):
         started = await self.tool("run_shell", {"cmd": "sleep 60", "wait_ms": 0})
         sid = started.structured["session_id"]
-        self.assertFalse(started.invocation_result.affordances)
+        hint = started.invocation_result.affordances[0]
+        self.assertEqual(hint.tool, 'call_tool')
+        self.assertEqual(hint.arguments, {'name': 'read_shell_session', 'args': {'session_id': sid, 'wait_ms': 1000}})
         for _ in range(2):
             read = await self.session(sid, action="read")
             self.assertFalse(read.invocation_result.affordances)
@@ -430,7 +432,9 @@ class ProductionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("runtime_epoch", header)
         hints = result.invocation_result.affordances
         self.assertIn(result.snapshot_refs[0].path, result.llm_text)
-        self.assertEqual(hints, [])
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0].arguments, {'name': 'read_shell_session', 'args': {
+            'session_id': result.structured['session_id'], 'wait_ms': 1000}})
         self.assertTrue((await self.session(header["session_id"], action="terminate")).ok)
 
     async def test_output_recovery_is_internal_and_never_reexecutes_command(self):

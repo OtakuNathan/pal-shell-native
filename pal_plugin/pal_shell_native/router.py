@@ -7,7 +7,6 @@ import asyncio
 from dataclasses import dataclass
 import itertools
 import os
-import shlex
 import sys
 import time
 from pathlib import Path
@@ -110,10 +109,10 @@ class ShellRouter(ShellRuntime):
                 retired.add(observed[1])
             self.worker_epochs[target] = (max(sequence, observed[0] if observed else 0), epoch)
 
-    async def list_targets(self, refresh=False, *, target=None):
+    async def list_targets(self, refresh=False, *, target=None, wait_ready_ms=0):
         sequence = next(self.rpc_sequence)
         port = self._port()
-        items = await port.list(refresh, target=target)
+        items = await port.list(refresh, target=target, wait_ready_ms=wait_ready_ms)
         if port is not self.owner.remote_port:
             raise RemoteFailure('backend_unavailable', 'Remote plugin changed during target inspection')
         for item in items:
@@ -333,9 +332,8 @@ class ShellRouter(ShellRuntime):
                 raise RemoteFailure('approval_expired', 'Approval expired before execution')
             # Approval is not a sudo password. Do not open an authentication PTY
             # or capture a password; the OS may still deny noninteractive sudo.
-            command = 'exec ' + shlex.join(['/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', cmd])
-            options = {**kwargs, 'cwd': cwd, 'shell': '/bin/sh', '_authorized': True}
-            return {**await super().run(command, **options), 'target': 0}
+            options = {**kwargs, 'cwd': cwd, '_approval': approval['operation_id']}
+            return {**await super().run(cmd, **options), 'target': 0}
         finally:
             self._foreground.pop(task, None)
 

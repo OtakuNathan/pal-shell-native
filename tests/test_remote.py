@@ -19,7 +19,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.worker = Worker(WorkerConfig('test-worker', 'test-client', self.key.public_key().public_bytes_raw().hex(), self.path/'worker.sock', output_limit=4096, retained_limit=8192))
         await self.worker.start()
         from unittest.mock import AsyncMock, patch
-        self.management_probe = patch('pal_shell_worker.privilege.management_status', new=AsyncMock(return_value={'ok':True,'allowed_actions':['shutdown']}))
+        self.management_probe = patch('pal_shell_worker.privilege.management_status', new=AsyncMock(return_value={'ok':True,'allowed_actions':['shutdown'], 'shutdown_schedule_version': 1}))
         self.management_probe.start()
         self.addCleanup(self.management_probe.stop)
         # /usr/bin/true stands in for the signed helper in these protocol tests.
@@ -360,6 +360,50 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         result = (await self.query(oid))['result']
         with self.assertRaises(RemoteError):
             await self.client.request('output', {'snapshot': result['snapshot'][:-2]+'xx', 'stream': 'stdout'})
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux scheduled shutdown')
+    async def test_shutdown_requires_upgraded_helper_before_approval(self):
+        from dataclasses import replace
+        from unittest.mock import AsyncMock, patch
+        self.worker.config = replace(self.worker.config, management_helper='/usr/bin/true', management_actions=('shutdown',))
+        args = {'operation_id': uuid4().hex, 'action': 'shutdown', 'target': 1,
+                'protected_machine_id': 'different-client-machine'}
+        with patch('pal_shell_worker.privilege.management_status', AsyncMock(return_value={
+                'ok': True, 'allowed_actions': ['shutdown']})):
+            with self.assertRaises(RemoteError) as rejected:
+                await self.client.request('prepare_privileged', args)
+        self.assertEqual(rejected.exception.code, 'management_upgrade_required')
+        self.assertNotIn(args['operation_id'], self.worker.operations)
+        self.assertFalse(self.worker.draining)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux scheduled shutdown')
+    async def test_shutdown_acceptance_follows_helper_receipt_and_never_replays(self):
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from pal_shell_worker.protocol import canonical
+        self.worker.config = replace(self.worker.config, management_helper='/usr/bin/true', management_actions=('shutdown',))
+        for code in (0, 1):
+            self.worker.draining = False
+            oid = uuid4().hex
+            prepared = await self.client.request('prepare_privileged', {
+                'operation_id': oid, 'action': 'shutdown', 'target': 1,
+                'protected_machine_id': 'different-client-machine'})
+            commit = {'operation_id': oid, 'signature': self.key.sign(canonical(prepared['approval'])).hex()}
+            with patch('pal_shell_worker.privilege.asyncio.create_subprocess_exec',
+                       AsyncMock(return_value=SimpleNamespace(wait=AsyncMock(return_value=code)))) as launch:
+                await self.client.request('commit_privileged', commit)
+                receipt = await self.query(oid)
+                await self.client.request('commit_privileged', commit)
+                launch.assert_awaited_once()
+            self.assertTrue(self.worker.draining)
+            if code == 0:
+                self.assertEqual(receipt['result']['status'], 'accepted')
+                self.assertTrue(receipt['result']['shutdown_initiated'])
+                self.assertEqual(receipt['result']['power_state'], 'unconfirmed')
+            else:
+                self.assertEqual(receipt['error']['effect'], 'unknown')
+                self.assertEqual(receipt['error']['code'], 'shutdown_unconfirmed')
 
     async def test_shutdown_requires_bound_grant_and_refuses_busy(self):
         from dataclasses import replace

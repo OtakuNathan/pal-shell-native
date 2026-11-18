@@ -11,3 +11,7 @@ java -XX:+UseParallelGC -jar "$jar" -workers "${TLC_WORKERS:-1}" -cleanup \
 
 java -XX:+UseParallelGC -jar "$jar" -workers "${TLC_WORKERS:-1}" -cleanup \
   -config spec/session/OutputCleanup.cfg spec/session/OutputCleanup.tla
+
+python scripts/export_local_admission.py --check
+java -XX:+UseParallelGC -jar "$jar" -workers "${TLC_WORKERS:-1}" -cleanup \
+  -config spec/session/LocalGeneration.cfg spec/session/LocalGeneration.tla

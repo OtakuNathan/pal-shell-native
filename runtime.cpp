@@ -7,7 +7,6 @@
 #include "output_files.h"
 #endif
 #include "process_posix.h"
-#include "portal/extensions/flux_foundry/python_interpreter_executor.h"
 #include <executor/uv_executor.h>
 #include <flow/flow.h>
 #include <algorithm>
@@ -39,10 +38,9 @@
 namespace portal::pal_shell {
 namespace ff = flux_foundry;
 using UvExecutor = flux_foundry::uv_executor;
-using GilExecutor = portal::flux_foundry_extensions::python_interpreter_executor;
 static std::atomic<id_t> next_id{1};
 
-struct Runtime::Impl {
+struct Engine::Impl {
     static thread_local Impl* delivering;
     struct Session;
     struct ProcessAwaitable;
@@ -65,7 +63,7 @@ struct Runtime::Impl {
     };
     struct Session {
         Impl* owner;
-        id_t id = next_id++;
+        id_t id;
         std::string shell, command, cwd, reason, error;
         bool tty = false, exposed = false, delivered = false, exit_seen = false, settled = false;
         bool flow_done = false, finished = false;
@@ -87,7 +85,7 @@ struct Runtime::Impl {
         std::thread waiter;
         ff::lite_ptr<ff::flow_controller> controller = ff::make_lite_ptr<ff::flow_controller>();
         ProcessAwaitable* awaitable = nullptr;
-        explicit Session(Impl* owner_, id_t request) : owner(owner_), initial_request(request) {}
+        explicit Session(Impl* owner_, id_t request) : owner(owner_), id(owner_->allocate_id()), initial_request(request) {}
     };
     using Result = ff::result_t<int, std::exception_ptr>;
     struct ProcessAwaitable final : ff::awaitable_base<ProcessAwaitable, int, std::exception_ptr> {
@@ -126,7 +124,6 @@ struct Runtime::Impl {
     uv_loop_t loop{};
     UvExecutor* executor = nullptr; // Constructed and closed on its owning loop thread.
     ff::lite_ptr<Blueprint> blueprint; // Immutable graph; executor belongs to this runtime.
-    GilExecutor gil;
     std::thread reactor;
     std::mutex ingress;
     bool closed = false, stopping = false;
@@ -142,7 +139,19 @@ struct Runtime::Impl {
     std::set<id_t> write_leases;
     unsigned completed_capacity;
 
-    explicit Impl(unsigned capacity) : completed_capacity(capacity) {
+    std::atomic<id_t> generation_id;
+    const id_t end_id;
+    const std::string output_dir;
+
+    id_t allocate_id() {
+        if (!end_id) return next_id++;
+        const auto id = generation_id.fetch_add(1);
+        if (id >= end_id) throw std::runtime_error("local engine ID range exhausted");
+        return id;
+    }
+
+    explicit Impl(unsigned capacity, id_t first, id_t end, std::string directory)
+        : completed_capacity(capacity), generation_id(first), end_id(end), output_dir(std::move(directory)) {
         if (capacity < 1 || capacity > 32) throw std::invalid_argument("completed capacity must be 1..32");
         std::promise<void> ready;
         auto started = ready.get_future();
@@ -170,12 +179,10 @@ struct Runtime::Impl {
     ~Impl() { shutdown(); }
 
     void emit(Event event) {
-        gil.dispatch(ff::task_wrapper_sbo([this, event = std::move(event)]() noexcept {
-            delivering = this;
-            try { if (notifier) notifier(event); }
-            catch (...) { ++notification_errors; PyErr_Clear(); }
-            delivering = nullptr;
-        }));
+        delivering = this;
+        try { if (notifier) notifier(event); }
+        catch (...) { ++notification_errors; }
+        delivering = nullptr;
     }
     void fail(id_t request, const std::string& error) {
         Event event; event.request = request; event.status = "rejected"; event.error = error;
@@ -407,7 +414,11 @@ struct Runtime::Impl {
     }
 #endif
     void spawn(const std::shared_ptr<Session>& s) {
+#ifdef _WIN32
         s->files = std::make_unique<OutputFiles>();
+#else
+        s->files = std::make_unique<OutputFiles>(output_dir);
+#endif
         std::unique_ptr<InputFile> input;
         if (s->stdin_text) {
             input = std::make_unique<InputFile>(*s->stdin_text);
@@ -527,66 +538,63 @@ struct Runtime::Impl {
                 maybe_shutdown();
             }));
         }
-        // Neither native cleanup nor the GIL worker waits for asyncio delivery.
-        PyThreadState* saved = PyGILState_Check() ? PyEval_SaveThread() : nullptr;
         reactor.join();
-        if (saved) PyEval_RestoreThread(saved);
-        gil.dispatch(ff::task_wrapper_sbo([this]() noexcept { notifier = {}; }));
-        gil.shutdown();
+        notifier = {};
     }
 };
 
-thread_local Runtime::Impl* Runtime::Impl::delivering = nullptr;
+thread_local Engine::Impl* Engine::Impl::delivering = nullptr;
 
-Runtime::Runtime(unsigned capacity) : impl_(std::make_unique<Impl>(capacity)) {}
-Runtime::~Runtime() = default;
-void Runtime::bind(std::function<void(const Event&)> notifier) {
+Engine::Engine(unsigned capacity, id_t first, id_t end, std::string directory)
+    : impl_(std::make_unique<Impl>(capacity, first, end, std::move(directory))) {}
+Engine::~Engine() = default;
+void Engine::bind(std::function<void(const Event&)> notifier) {
     std::lock_guard<std::mutex> lock(impl_->ingress);
     if (impl_->closed || impl_->notifier) throw std::runtime_error("callback already bound or runtime closed");
     impl_->notifier = std::move(notifier);
 }
-void Runtime::run(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run(id_t request, std::string shell, std::string command, std::string cwd,
                   bool tty, int wait_ms, int timeout_ms, int inline_limit) {
     run_limited(request, std::move(shell), std::move(command), std::move(cwd), tty,
                 wait_ms, timeout_ms, inline_limit, 0);
 }
-void Runtime::run_limited(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_limited(id_t request, std::string shell, std::string command, std::string cwd,
                          bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit) {
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, output_limit, false);
 }
-void Runtime::run_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_authorized(id_t request, std::string shell, std::string command, std::string cwd,
                              bool tty, int wait_ms, int timeout_ms, int inline_limit) {
     run_limited_authorized(request, std::move(shell), std::move(command), std::move(cwd), tty,
                            wait_ms, timeout_ms, inline_limit, 0);
 }
-void Runtime::run_limited_authorized(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_limited_authorized(id_t request, std::string shell, std::string command, std::string cwd,
                                      bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit) {
     if (tty) throw std::invalid_argument("privilege_pty_unsupported: approved commands cannot open a PTY");
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, output_limit, true);
 }
-void Runtime::run_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
     bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text) {
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, 0, false, std::move(stdin_text));
 }
-void Runtime::run_limited_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_limited_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
     bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text) {
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, output_limit, false, std::move(stdin_text));
 }
-void Runtime::run_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
     bool tty, int wait_ms, int timeout_ms, int inline_limit, std::string stdin_text) {
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, 0, true, std::move(stdin_text));
 }
-void Runtime::run_limited_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::run_limited_authorized_with_stdin(id_t request, std::string shell, std::string command, std::string cwd,
     bool tty, int wait_ms, int timeout_ms, int inline_limit, id_t output_limit, std::string stdin_text) {
     launch(request, std::move(shell), std::move(command), std::move(cwd), tty,
            wait_ms, timeout_ms, inline_limit, output_limit, true, std::move(stdin_text));
 }
-void Runtime::launch(id_t request, std::string shell, std::string command, std::string cwd,
+void Engine::launch(id_t request, std::string shell, std::string command, std::string cwd,
                      bool tty, int wait_ms, int timeout_ms, int inline_limit,
                      id_t output_limit, bool allow_privilege, std::optional<std::string> stdin_text) {
     if (tty && stdin_text) throw std::invalid_argument("stdin_pty_conflict: stdin requires tty=false");
@@ -608,7 +616,7 @@ void Runtime::launch(id_t request, std::string shell, std::string command, std::
     session->tty = tty; session->wait_ms = wait_ms; session->timeout_ms = timeout_ms;
     impl_->post(request, [owner = impl_.get(), session] { owner->begin(session); });
 }
-void Runtime::read(id_t request, id_t id, int wait_ms) {
+void Engine::read(id_t request, id_t id, int wait_ms) {
     if (wait_ms < 0) throw std::invalid_argument("negative wait budget");
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
@@ -616,7 +624,7 @@ void Runtime::read(id_t request, id_t id, int wait_ms) {
         else impl_->timer(session, Impl::TimerKind::wait, wait_ms, request);
     });
 }
-void Runtime::watch(id_t request, id_t id, int wait_ms, int extend_by_ms) {
+void Engine::watch(id_t request, id_t id, int wait_ms, int extend_by_ms) {
     if (wait_ms <= 0 || wait_ms > 300000 || extend_by_ms < 0) throw std::invalid_argument("invalid watch budget");
     impl_->post(request, [=] {
         auto s = impl_->lookup(id);
@@ -628,7 +636,7 @@ void Runtime::watch(id_t request, id_t id, int wait_ms, int extend_by_ms) {
         impl_->emit(impl_->snapshot(s, request));
     });
 }
-void Runtime::extend(id_t request, id_t id, int extend_by_ms) {
+void Engine::extend(id_t request, id_t id, int extend_by_ms) {
     if (extend_by_ms <= 0) throw std::invalid_argument("positive extension required");
     impl_->post(request, [=] {
         auto s = impl_->lookup(id);
@@ -638,7 +646,7 @@ void Runtime::extend(id_t request, id_t id, int extend_by_ms) {
         impl_->emit(impl_->snapshot(s, request));
     });
 }
-void Runtime::unwatch(id_t request, id_t id) {
+void Engine::unwatch(id_t request, id_t id) {
     impl_->post(request, [=] {
         auto s = impl_->lookup(id);
         s->lifecycle.unwatch();
@@ -647,7 +655,7 @@ void Runtime::unwatch(id_t request, id_t id) {
         impl_->emit(impl_->snapshot(s, request));
     });
 }
-void Runtime::write(id_t request, id_t id, std::string input) {
+void Engine::write(id_t request, id_t id, std::string input) {
     impl_->post(request, [this, request, id, input = std::move(input)] {
         auto session = impl_->lookup(id);
         if (!session->tty || !session->output || session->exit_seen || !session->reason.empty())
@@ -659,7 +667,7 @@ void Runtime::write(id_t request, id_t id, std::string input) {
         impl_->emit(std::move(event));
     });
 }
-void Runtime::resize(id_t request, id_t id, int rows, int columns) {
+void Engine::resize(id_t request, id_t id, int rows, int columns) {
     if (rows < 1 || columns < 1 || rows > 65535 || columns > 65535) throw std::invalid_argument("invalid terminal size");
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
@@ -673,14 +681,14 @@ void Runtime::resize(id_t request, id_t id, int rows, int columns) {
         impl_->emit(impl_->snapshot(session, request));
     });
 }
-void Runtime::terminate(id_t request, id_t id) {
+void Engine::terminate(id_t request, id_t id) {
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
         if (!session->finished) session->controller->cancel(true);
         impl_->emit(impl_->snapshot(session, request));
     });
 }
-void Runtime::release(id_t request, id_t id) {
+void Engine::release(id_t request, id_t id) {
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
         if (!session->finished) throw std::runtime_error("session still running; terminate first");
@@ -690,7 +698,7 @@ void Runtime::release(id_t request, id_t id) {
         Event event; event.request = request; event.session = id; event.status = "released"; impl_->emit(std::move(event));
     });
 }
-void Runtime::release_output(id_t request, id_t id) {
+void Engine::release_output(id_t request, id_t id) {
     impl_->post(request, [=] {
         auto found = impl_->sessions.find(id);
         // Handoff acknowledgement can be retried after the first reply is lost.
@@ -704,7 +712,7 @@ void Runtime::release_output(id_t request, id_t id) {
         impl_->emit(std::move(event));
     });
 }
-void Runtime::acknowledge(id_t request, id_t id, bool terminal) {
+void Engine::acknowledge(id_t request, id_t id, bool terminal) {
     impl_->post(request, [=] {
         auto session = impl_->lookup(id);
         session->delivered = true;
@@ -713,7 +721,7 @@ void Runtime::acknowledge(id_t request, id_t id, bool terminal) {
         impl_->emit(std::move(event));
     });
 }
-void Runtime::cancel_request(id_t request, id_t target) {
+void Engine::cancel_request(id_t request, id_t target) {
     impl_->post(request, [=] {
         auto current = impl_->sessions;
         for (const auto& item : current) {
@@ -731,26 +739,26 @@ void Runtime::cancel_request(id_t request, id_t target) {
         impl_->emit(std::move(event));
     });
 }
-void Runtime::acquire_write(id_t request) {
+void Engine::acquire_write(id_t request) {
     impl_->post(request, [=] {
         // Keep API 2 lease tokens for existing callers without excluding other
         // tool calls or shell sessions. State changes stay on the reactor.
-        const id_t lease = next_id++;
+        const id_t lease = impl_->allocate_id();
         impl_->write_leases.insert(lease);
         Event event; event.request = request; event.session = lease; event.status = "write_acquired";
         impl_->emit(std::move(event));
     });
 }
-void Runtime::release_write(id_t request, id_t lease) {
+void Engine::release_write(id_t request, id_t lease) {
     impl_->post(request, [=] {
         if (!impl_->write_leases.erase(lease)) throw std::runtime_error("invalid write lease");
         Event event; event.request = request; event.status = "write_released"; impl_->emit(std::move(event));
     });
 }
-void Runtime::close() {
+void Engine::close() {
     if (Impl::delivering == impl_.get())
         throw std::runtime_error("close must be scheduled on the host thread, outside the native callback");
     impl_->shutdown();
 }
-int Runtime::callback_errors() const { return impl_->notification_errors.load(); }
+int Engine::callback_errors() const { return impl_->notification_errors.load(); }
 }

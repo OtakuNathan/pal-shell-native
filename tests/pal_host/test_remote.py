@@ -51,8 +51,8 @@ class DirectPort:
             raise RemoteFailure(error['code'], error['message'], effect=error['effect'])
         return reply['result']
 
-    async def list(self, refresh=False, *, target=None):
-        return (await self.call('list', {'refresh': refresh, 'target': target}))['targets']
+    async def list(self, refresh=False, *, target=None, wait_ready_ms=0):
+        return (await self.call('list', {'refresh': refresh, 'target': target, 'wait_ready_ms': wait_ready_ms}))['targets']
 
 
 class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -90,6 +90,17 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
             result = await self.tool('run_shell', target=target, cmd='cat', stdin=text)
             self.assertTrue(result.ok, result.text)
             self.assertEqual(result.structured['stdout'], text)
+
+    async def test_quoted_numeric_target_rejects_before_submission_and_explains_selectors(self):
+        result = await self.tool('run_shell', target='1', cmd='printf wrong-target')
+        self.assertFalse(result.ok)
+        self.assertIn('JSON integer 1', result.text)
+        self.assertIn('exact name "test"', result.text)
+        self.assertFalse(self.owner.shell.operations)
+
+        result = await self.tool('run_shell', target=1, cmd='printf right-target')
+        self.assertTrue(result.ok, result.text)
+        self.assertEqual(result.structured['stdout'], 'right-target')
 
     async def test_published_file_tools_share_shell_target_resolution_and_delivery(self):
         path = self.path / 'file.txt'
@@ -664,7 +675,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_palpkg_install_discover_reload_and_execute(self):
         import json
         import sys
-        from pal.packages.archive import build
+        from pal_shell_test_package import build_test_package
         from pal.packages.service import PackageService
         from pal.plugins.host import PluginHost
         from pal.plugins.models import PluginBundleModel
@@ -673,7 +684,7 @@ class RemoteRoutingTests(unittest.IsolatedAsyncioTestCase):
         import pal_shell_remote
         saved_modules = {name: module for name, module in sys.modules.items() if name.startswith(('pal_shell_native', 'pal_shell_remote', 'pal_shell_contracts'))}
         source = Path(pal_shell_remote.__file__).resolve().parent.parent
-        artifact = build(source, self.path/'dist')
+        artifact = build_test_package(source, self.path)
         result = PackageService(self.path).install(artifact)
         self.assertEqual(result['status'], 'ready')
         self.owner.detach_remote(self.port)

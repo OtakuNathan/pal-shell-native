@@ -79,13 +79,16 @@ class SessionInput(StrictToolModel):
         return self
 
 
-def session_affordances(result: dict, *, output_ref: str = "") -> list[ToolAffordance]:
-    """Only failed output delivery warrants a recovery action.
-
-    Live state, PTY support, and a new session ID are facts, not reasons to
-    replay the session contract. Static controls remain in tool guidance.
-    """
+def session_affordances(result: dict, *, output_ref: str = "", created: bool = False) -> list[ToolAffordance]:
+    """Give a new live session one exact read route; recovery never reruns it."""
     if not result.get("output_error"):
+        if created and result.get("session_id") and result.get("status") == "running":
+            return [ToolAffordance(
+                tool="call_tool", arguments={"name": "read_shell_session", "args": {
+                    "session_id": result["session_id"], "wait_ms": 1000}},
+                reason="When fresh output is needed, read this existing session; its target is already bound. "
+                       "Completion notifications may arrive automatically; do not poll repeatedly or rerun the command.",
+            )]
         return []
     sid = result.get("session_id", 0)
     if sid:

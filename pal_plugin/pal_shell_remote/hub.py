@@ -16,7 +16,7 @@ from .slot import RemoteSlot
 
 
 class RemoteHub:
-    def __init__(self, targets):
+    def __init__(self, targets, *, cache_directory=None):
         from pal_shell_worker.transport import Executor
         targets = list(targets)
         self.slots = {}
@@ -26,10 +26,12 @@ class RemoteHub:
         if len(shortcuts) != len(set(shortcuts)):
             raise ValueError('Target shortcuts must be unique')
         self.executor = Executor() if targets else None
+        from .capability_cache import CapabilityCache
+        cache = CapabilityCache(Path(cache_directory)) if cache_directory is not None else None
         for config in targets:
             if config.target in self.slots:
                 raise ValueError('Duplicate remote target')
-            self.slots[config.target] = RemoteSlot(config, self.executor)
+            self.slots[config.target] = RemoteSlot(config, self.executor, capability_cache=cache)
 
     async def call(self, method, params):
         try:
@@ -41,11 +43,15 @@ class RemoteHub:
             elif method == 'resolve':
                 result = resolve_target([slot.config for slot in self.slots.values()], params.get('target'))
             elif method == 'list':
+                wait_ready_ms = params.get('wait_ready_ms', 0)
+                if type(wait_ready_ms) is not int or not 0 <= wait_ready_ms <= 300000:
+                    raise RemoteError('invalid_request', 'wait_ready_ms must be between 0 and 300000')
                 target = params.get('target')
                 if target is not None:
                     target = resolve_target([slot.config for slot in self.slots.values()], target)['target']
                 selected = self.slots.values() if target is None else (self.slots[target],)
-                result = {'targets': await asyncio.gather(*(s.describe(params.get('refresh', False)) for s in selected))}
+                result = {'targets': await asyncio.gather(*(s.describe(params.get('refresh', False),
+                    wait_ready_ms=wait_ready_ms) for s in selected))}
             else:
                 resolved = resolve_target([slot.config for slot in self.slots.values()], params.get('target'))
                 if params.get('binding') and params['binding'] != resolved['binding']:
@@ -58,7 +64,14 @@ class RemoteHub:
                     slot.execution.cancel_prepared(params['operation_id'])
                     result = slot.execution.status()
                 elif method == 'start':
+                    wait_ready_ms = params.get('wait_ready_ms', 0)
+                    if type(wait_ready_ms) is not int or not 0 <= wait_ready_ms <= 300000:
+                        raise RemoteError('invalid_request', 'wait_ready_ms must be between 0 and 300000')
                     result = await slot.start(params.get('action'))
+                    result['readiness'] = 'unverified'
+                    if wait_ready_ms and result.get('returncode') == 0:
+                        observation = await slot.describe(True, wait_ready_ms=wait_ready_ms)
+                        result.update(readiness=observation['readiness'], observation=observation)
                 elif method == 'approve':
                     from pal_shell_worker.client import load_private_key
                     from pal_shell_worker.protocol import canonical
@@ -91,8 +104,12 @@ class RemoteHub:
 
 
 async def serve(config, directory):
+    if dependency := os.environ.get("PAL_SHELL_HUB_DEPENDENCIES"):
+        import _pal_shell_rpc
+        if not Path(_pal_shell_rpc.__file__).resolve().is_relative_to(Path(dependency).resolve()):
+            raise RuntimeError("Hub loaded RPC from outside its plugin generation")
     targets = [Target(**item) for item in tomllib.loads(config.read_text()).get('targets', [])]
-    hub = RemoteHub(targets)
+    hub = RemoteHub(targets, cache_directory=config.parent.parent / 'data' / 'remote-capabilities')
     endpoint = SidecarEndpoint(directory, 'remote', runtime_dir_override=directory)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
