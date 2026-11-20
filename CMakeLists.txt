@@ -20,8 +20,8 @@ FetchContent_Declare(ff
   URL_HASH SHA256=466a2c15297000a1a23d01158ac248a15c79f4b5f2dbd4b4b94b954138d24dfc
   SOURCE_SUBDIR _headers_only)
 FetchContent_Declare(portal
-  URL https://codeload.github.com/OtakuNathan/portal/tar.gz/d0510e49d587228cb760dbdef2ea60c20753400e
-  URL_HASH SHA256=852e2eafb86766b0b7dd987141442baa4d09ce6743a3595d5f0d6a9db0ada62d
+  URL https://codeload.github.com/OtakuNathan/portal/tar.gz/0839bd7766be853382653627dc23b531e2061a4e
+  URL_HASH SHA256=bd56bed7e4532fd41032453829ce48b09fa19b94ff3e2dfa6c69b46469022788
   SOURCE_SUBDIR _headers_only)
 set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LIBUV_BUILD_BENCH OFF CACHE BOOL "" FORCE)
